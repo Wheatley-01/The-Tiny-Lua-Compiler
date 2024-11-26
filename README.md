@@ -1,6 +1,6 @@
 ![Banner](https://github.com/ByteXenon/TinyLua/assets/125568681/41cf5285-e31d-4b27-a8a8-ee83a7300f1f)
 
-***originally inspired by Jamie Kyle's [The Super Tiny Compiler](https://github.com/jamiebuilds/the-super-tiny-compiler) written in JavaScript***
+**_originally inspired by Jamie Kyle's [The Super Tiny Compiler](https://github.com/jamiebuilds/the-super-tiny-compiler) written in JavaScript_**
 
 **Welcome to The Tiny Lua Compiler!**
 
@@ -10,7 +10,7 @@ written in easy to read Lua code.
 ## Features
 
 - **Zero dependencies**: This compiler is written in pure Lua and has no dependencies.
-- **Educational**: Reading through the guided code will help you learn about how *most* compilers work from end to end.
+- **Educational**: Reading through the guided code will help you learn about how _most_ compilers work from end to end.
 - **Self-compiling**: This compiler can compile itself!
 
 ### [Want to jump into the code? Click here](the-tiny-lua-compiler.lua)
@@ -55,10 +55,10 @@ local inputCode = [[
   print("Hello, World!")
 ]]
 
-local tokens             = tlc.Tokenizer.tokenize(inputCode)
-local abstractSyntaxTree = tlc.Parser.parse(tokens)
-local prototype          = tlc.InstructionGenerator.generate(abstractSyntaxTree)
-local bytecode           = tlc.Compiler.compile(prototype)
+local tokens             = tlc.Tokenizer.new(inputCode):tokenize()
+local abstractSyntaxTree = tlc.Parser.new(tokens):parse()
+local prototype          = tlc.CodeGenerator.new(abstractSyntaxTree):generate()
+local bytecode           = tlc.Compiler.new(prototype):compile()
 
 local compiledFunction = loadstring(bytecode)
 
