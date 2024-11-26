@@ -22,7 +22,7 @@
    Parser: Converts tokens into an Abstract Syntax Tree (AST), a tree
     representation showing the structure of the code.
 
-   Instruction Generator: Transforms the AST into Lua VM instructions, the
+   Code Generator: Transforms the AST into Lua VM instructions, the
     low-level commands that the Lua VM can execute.
 
    Compiler: Turns Lua VM instructions into Lua bytecode, ready for
@@ -115,6 +115,22 @@ local function makeTrie(ops)
     node.Value = op
   end
   return trie
+end
+
+-- Converts a string into a list of characters
+local function stringToChars(str)
+  local chars = {}
+  for char in str:gmatch(".") do
+    table.insert(chars, char)
+  end
+  return chars
+end
+
+-- Inserts all methods from a source table into a target table
+local function insertValues(target, source)
+  for key, value in pairs(source) do
+    target[key] = value
+  end
 end
 
 --[[
@@ -213,293 +229,356 @@ local TOKENIZER_OPERATOR_TRIE = makeTrie(TOKENIZER_LUA_OPERATORS)
     |-----------------|------------------|
 --]]
 
-local Tokenizer = {}
-function Tokenizer.tokenize(code)
-  --// LOCAL VARIABLES //--
-  local charStream, charStreamLen = {}, 0
-  for char in code:gmatch(".") do
-    charStreamLen = charStreamLen + 1
-    charStream[charStreamLen] = char
+--* TokenizerMethods *--
+local TokenizerMethods = {}
+
+--// Character Navigation //--
+
+-- Looks ahead by n characters in the character stream
+function TokenizerMethods:lookAhead(n)
+  local updatedCharPos = self.curCharPos + n
+  local updatedChar    = self.charStream[updatedCharPos]
+  return updatedChar
+end
+
+-- Consumes (skips) n characters in the character stream
+function TokenizerMethods:consume(n)
+  local updatedCharPos = self.curCharPos + n
+  local updatedChar    = self.charStream[updatedCharPos]
+  self.curCharPos      = updatedCharPos
+  self.curChar         = updatedChar
+  return updatedChar
+end
+
+--// Character Checkers //--
+
+-- Checks if a character is \t (tab), \n (newline), or \r (carriage return) 
+function TokenizerMethods:isWhitespace(char)
+  return char:match("%s")
+end
+
+-- Checks if a character is a digit (0-9)
+function TokenizerMethods:isNumber(char)
+  return char:match("%d")
+end
+
+-- Checks if a number is hexadecimal (0-9, a-f, A-F)
+function TokenizerMethods:isHexadecimalNumber(char)
+  return char:match("[%da-fA-F]")
+end
+
+-- Checks if a character is a letter, digit, or underscore
+function TokenizerMethods:isIdentifier(char)
+  return char:match("[%a%d_]")
+end
+
+-- Checks if a character is a letter or underscore
+function TokenizerMethods:isIdentifierStart(char)
+  return char:match("[%a_]")
+end
+
+function TokenizerMethods:isScientificNotationPrefix(char)
+  return char == "e" or char == "E"
+end
+
+--// Multi-Character Checkers //--
+function TokenizerMethods:isHexadecimalNumberPrefix()
+  local nextChar = self:lookAhead(1)
+  return self.curChar == "0" and (
+    nextChar == "x" or nextChar == "X"
+  )
+end
+
+function TokenizerMethods:isVarArg()
+  return self.curChar == "."
+         and self:lookAhead(1) == "."
+         and self:lookAhead(2) == "."
+end
+
+function TokenizerMethods:isComment()
+  return self.curChar == "-"
+         and self:lookAhead(1) == "-"
+end
+
+function TokenizerMethods:isString()
+  local curChar  = self.curChar
+  local nextChar = self:lookAhead(1)
+  return (curChar == '"' or curChar == "'")
+      or (curChar == "[" and (nextChar == "[" or nextChar == "="))
+end
+
+--// Consumers //--
+function TokenizerMethods:consumeWhitespace()
+  local startChar = self.curChar
+  local startPos  = self.curCharPos
+  while self:lookAhead(1) == startChar do
+    self:consume(1)
   end
 
-  local curCharPos = 1
-  local curChar = charStream[curCharPos]
+  return self.code:sub(startPos, self.curCharPos)
+end
 
-  --// CHARACTER NAVIGATION //--
-  local function lookAhead(n)
-    local updatedCharPos = curCharPos + (n or 1)
-    local updatedChar    = charStream[updatedCharPos] or "\0"
-    return updatedChar
-  end
-  local function consume(n)
-    local updatedCharPos = curCharPos + (n or 1)
-    local updatedChar    = charStream[updatedCharPos] or "\0"
-    curCharPos = updatedCharPos
-    curChar    = updatedChar
-    return updatedChar
+function TokenizerMethods:consumeIdentifier()
+  local start = self.curCharPos
+  while self:isIdentifier(self:lookAhead(1)) do
+    self:consume(1)
   end
 
-  --// CHECKERS //--
-  local function isWhitespace(char)
-    char = char or curChar
-    return char:match("%s")
-  end
-  local function isNumber(char)
-    char = char or curChar
-    return char:match("%d")
-  end
-  local function isIdentifier(char)
-    char = char or curChar
-    return char:match("[%a%d_]")
-  end
-  local function isIdentifierStart(char)
-    char = char or curChar
-    return char:match("[%a_]")
-  end
-  local function isScientificNotationPrefix(char)
-    char = char or curChar
-    return char == "e" or char == "E"
-  end
-  local function isHexadecimalNumberPrefix()
-    return curChar == "0" and (lookAhead() == "x" or lookAhead() == "X")
-  end
-  local function isVarArg()
-    return curChar == "." and lookAhead(1) == "." and lookAhead(2) == "."
-  end
-  local function isComment()
-    return curChar == "-" and lookAhead(1) == "-"
-  end
-  local function isString()
-    return (curChar == '"' or curChar == "'")
-        or (curChar == "[" and (lookAhead(1) == "[" or lookAhead(1) == "="))
+  return self.code:sub(start, self.curCharPos)
+end
+
+function TokenizerMethods:consumeInteger(maxLength)
+  local start = self.curCharPos
+  while self:lookAhead(1):match("%d") do
+    if (maxLength and (self.curCharPos - start) >= maxLength) then
+      break
+    end
+    self:consume(1)
   end
 
-  --// CONSUMERS //--
-  local function consumeWhitespace()
-    while isWhitespace(lookAhead()) do
-      consume()
+  return self.code:sub(start, self.curCharPos)
+end
+
+function TokenizerMethods:consumeNumber()
+  local start = self.curCharPos
+
+  -- Hexadecimal number case
+  -- 0[xX][0-9a-fA-F]+
+  if self:isHexadecimalNumberPrefix() then
+    self:consume(2)   -- Consume the "0x" part
+    while self:isHexadecimalNumber(self:lookAhead(1)) do
+      self:consume(1) -- Consume hexadecimal digits
+    end
+    return self.code:sub(start, self.curCharPos)
+  end
+
+  -- [0-9]*
+  while self:isNumber(self:lookAhead(1)) do
+    self:consume(1) -- Consume digits
+  end
+
+  -- Floating point number case
+  -- \.[0-9]+
+  if self:lookAhead(1) == "." then
+    self:consume(1) -- Consume the "."
+    while self:isNumber(self:lookAhead(1)) do
+      self:consume(1)
     end
   end
-  local function consumeIdentifier()
-    local start = curCharPos
-    while isIdentifier(lookAhead()) do
-      consume()
+
+  -- Exponential (scientific) notation case
+  -- [eE][+-]?[0-9]+
+  if self:isScientificNotationPrefix(self:lookAhead(1)) then
+    self:consume(1)   -- Consume the "e" or "E"
+    if self:lookAhead(1) == "+" or self:lookAhead(1) == "-" then
+      self:consume(1) -- Consume optional sign
     end
-    return code:sub(start, curCharPos)
+    while self:isNumber(self:lookAhead(1)) do
+      self:consume(1) -- Consume exponent digits
+    end
   end
-  local function consumeInteger(maxLength)
-    local start = curCharPos
-    while lookAhead():match("%d") do
-      if (maxLength and (curCharPos - start) >= maxLength) then
+
+  return self.code:sub(start, self.curCharPos)
+end
+
+function TokenizerMethods:consumeSimpleString()
+  local delimiter = self.curChar
+  local newString = {}
+  self:consume(1) -- Consume the delimiter
+  while self.curChar ~= delimiter do
+    if self.curChar == "\\" then
+      local nextChar = self:consume(1)
+      if nextChar:match("%d") then -- Numeric escape sequence?
+        local number = self:consumeInteger(3)
+        local luaNumber = tonumber(number)
+        if not luaNumber then
+          error("invalid escape sequence near '\\" .. number .. "'")
+        end
+
+        table.insert(newString, string.char(luaNumber))
+      elseif TOKENIZER_ESCAPED_CHARACTER_CONVERSIONS[nextChar] then
+        table.insert(newString, TOKENIZER_ESCAPED_CHARACTER_CONVERSIONS[nextChar])
+      else
+        error("invalid escape sequence near '\\" .. nextChar .. "'")
+      end
+    else
+      table.insert(newString, self.curChar)
+    end
+    self:consume(1)
+  end
+  return table.concat(newString)
+end
+
+function TokenizerMethods:consumeLongString()
+  self:consume(1) -- Consume the "[" character
+  local start = self.curCharPos
+  local depth = 0
+  while self.curChar == "=" do
+    self:consume(1) -- Consume the "=" character
+    depth = depth + 1
+  end
+  if self.curChar ~= "[" then
+    error("invalid long string delimiter")
+  end
+
+  self:consume(1) -- Consume the "[" character
+  while true do
+    if self.curChar == "]" then
+      self:consume(1) -- Consume the "]" character
+      local closingDepth = 0
+      while self.curChar == "=" do
+        self:consume(1) -- Consume the "=" character
+        closingDepth = closingDepth + 1
+      end
+      if closingDepth == depth and self.curChar == "]" then
+        -- Exit the loop, as the closing delimiter is fully matched
         break
       end
-      consume()
+    elseif self.curChar == "\0" then
+      error("Unclosed long comment")
     end
-    return code:sub(start, curCharPos)
+
+    self:consume(1)
   end
-  local function consumeNumber()
-    local start = curCharPos
 
-    -- Hexadecimal number case
-    -- 0[xX][0-9a-fA-F]+
-    if isHexadecimalNumberPrefix() then
-      consume(2) -- Consume the "0x" part
-      while isNumber(lookAhead()) or lookAhead():match("[a-fA-F]") do
-        consume() -- Consume hexadecimal digits
-      end
-      return code:sub(start, curCharPos)
-    end
+  return self.code:sub(start + depth + 1, self.curCharPos - 2 - depth)
+end
 
-    while isNumber(lookAhead()) do
-      consume() -- Consume digits
-    end
-
-    -- Floating point number case
-    -- [0-9]*\.[0-9]+
-    if lookAhead() == "." then
-      consume() -- Consume the "."
-      while isNumber(lookAhead()) do
-        consume()
-      end
-    end
-
-    -- Exponential (scientific) notation case
-    -- [eE][+-]?[0-9]+
-    if isScientificNotationPrefix(lookAhead()) then
-      consume() -- Consume the "e" or "E"
-      if lookAhead() == "+" or lookAhead() == "-" then
-        consume() -- Consume optional sign
-      end
-      while isNumber(lookAhead()) do
-        consume() -- Consume exponent digits
-      end
-    end
-
-    return code:sub(start, curCharPos)
+function TokenizerMethods:consumeString()
+  if self.curChar == "[" then
+    return self:consumeLongString()
   end
-  local function consumeSimpleString()
-    local delimiter = curChar
-    local newString = { }
-    consume() -- Consume the delimiter
-    while curChar ~= delimiter do
-      if curChar == "\\" then
-        local nextChar = consume()
-        if nextChar:match("%d") then -- Numeric escape sequence?
-          local number = consumeInteger(3)
-          table.insert(newString, string.char(tonumber(number)))
-        elseif TOKENIZER_ESCAPED_CHARACTER_CONVERSIONS[nextChar] then
-          table.insert(newString, TOKENIZER_ESCAPED_CHARACTER_CONVERSIONS[nextChar])
-        else
-          error("invalid escape sequence near '\\" .. nextChar .. "'")
-        end
-      else
-        table.insert(newString, curChar)
-      end
-      consume()
-    end
-    return table.concat(newString)
-  end
-  local function consumeLongString()
-    consume() -- Consume the "[" character
-    local start = curCharPos
-    local depth = 0
-    while curChar == "=" do
-      consume() -- Consume the "=" character
-      depth = depth + 1
-    end
-    if curChar ~= "[" then
-      error("invalid long string delimiter")
-    end
+  return self:consumeSimpleString()
+end
 
-    consume() -- Consume the "[" character
-    while true do
-      if curChar == "]" then
-        consume() -- Consume the "]" character
-        local closingDepth = 0
-        while curChar == "=" do
-          consume() -- Consume the "=" character
-          closingDepth = closingDepth + 1
-        end
-        if closingDepth == depth and curChar == "]" then
-          -- Exit the loop, as the closing delimiter is fully matched
-          break
-        end
-      elseif curChar == "\0" then
-        error("Unclosed long comment")
+function TokenizerMethods:consumeOperator()
+  local node  = TOKENIZER_OPERATOR_TRIE
+  local operator
+
+  -- Trie walker
+  local index = 0
+  while true do
+    local character = self:lookAhead(index)
+    node = node[character] -- Advance to the deeper node
+    if not node then break end
+    operator = node.Value
+    index    = index + 1
+  end
+  if not operator then return end
+  self:consume(#operator - 1)
+  return operator
+end
+
+function TokenizerMethods:consumeShortComment()
+  local curChar = self.curChar
+  while curChar ~= "\0" and curChar ~= "\n" do
+    curChar = self:consume(1)
+  end
+end
+
+function TokenizerMethods:consumeLongComment()
+  self:consume(1) -- Consumes the "[" character
+  local depth = 0
+  while self.curChar == "=" do
+    self:consume(1) -- Consume the "=" character
+    depth = depth + 1
+  end
+  if self.curChar ~= "[" then return self:consumeShortComment() end
+  while true do
+    if self.curChar == "]" then
+      self:consume(1) -- Consume the "]" character
+      local closingDepth = 0
+      while self.curChar == "=" do
+        self:consume(1) -- Consume the "=" character
+        closingDepth = closingDepth + 1
       end
 
-      consume()
-    end
-
-    return code:sub(start + depth + 1, curCharPos - 2 - depth)
-  end
-  local function consumeString()
-    if curChar == "[" then
-      return consumeLongString()
-    end
-    return consumeSimpleString()
-  end
-  local function consumeOperator()
-    local node  = TOKENIZER_OPERATOR_TRIE
-    local operator
-
-    -- Trie walker
-    local index = 0
-    while true do
-      local character = lookAhead(index)
-      node = node[character] -- Advance to the deeper node
-      if not node then break end
-      operator = node.Value
-      index    = index + 1
-    end
-    if not operator then return end
-    consume(#operator - 1)
-    return operator
-  end
-  local function consumeShortComment()
-    while curChar ~= "\0" and curChar ~= "\n" do
-      consume()
-    end
-  end
-  local function consumeLongComment()
-    consume() -- Consumes the "[" character
-    local depth = 0
-    while curChar == "=" do
-      consume() -- Consume the "=" character
-      depth = depth + 1
-    end
-    if curChar ~= "[" then return consumeShortComment() end
-    while true do
-      if curChar == "]" then
-        consume() -- Consume the "]" character
-        local closingDepth = 0
-        while curChar == "=" do
-          consume() -- Consume the "=" character
-          closingDepth = closingDepth + 1
-        end
-        if curChar == "]" and closingDepth == depth then break end
-      elseif curChar == "\0" then
-        error("Unclosed long comment")
+      if self.curChar == "]" and closingDepth == depth then
+        break
       end
-      consume()
+    elseif self.curChar == "\0" then
+      error("Unclosed long comment")
     end
+    self:consume(1)
   end
-  local function consumeComment()
-    consume(2) -- Consume the "--"
-    if curChar == "[" then
-      return consumeLongComment()
-    end
-    return consumeShortComment()
+end
+
+function TokenizerMethods:consumeComment()
+  self:consume(2) -- Consume the "--"
+  if self.curChar == "[" then
+    return self:consumeLongComment()
   end
+  return self:consumeShortComment()
+end
 
-  --// TOKENIZERS //--
-  local function getNextToken()
-    if isWhitespace(curChar) then
-      consumeWhitespace()
-      return
-    elseif isComment() then
-      consumeComment()
-      return
-    elseif isNumber(curChar) then
-      return { TYPE = "Number", Value = tonumber(consumeNumber()) }
-    elseif isIdentifierStart(curChar) then
-      local identifier = consumeIdentifier()
-      if TOKENIZER_LUA_OPERATORS_LOOKUP[identifier] then
-        return { TYPE = "Operator", Value = identifier }
-      elseif TOKENIZER_RESERVED_KEYWORDS_LOOKUP[identifier] then
-        return { TYPE = "Keyword", Value = identifier }
-      elseif TOKENIZER_LUA_CONSTANTS_LOOKUP[identifier] then
-        return { TYPE = "Constant", Value = identifier }
-      end
-      return { TYPE = "Identifier", Value = identifier }
-    elseif isString() then
-      return { TYPE = "String", Value = consumeString() }
-    elseif isVarArg() then
-      consume(2)
-      return { TYPE = "VarArg" }
-    end
+--// Token Consumer Handler //-- 
+function TokenizerMethods:getNextToken()
+  local curChar = self.curChar
 
-    local operator = consumeOperator()
-    if operator then
-      return { TYPE = "Operator", Value = operator }
+  if self:isWhitespace(curChar) then
+    self:consumeWhitespace()
+    return
+  elseif self:isComment() then
+    self:consumeComment()
+    return
+  elseif self:isNumber(curChar) then
+    return { TYPE = "Number", Value = tonumber(self:consumeNumber()) }
+  elseif self:isIdentifierStart(curChar) then
+    local identifier = self:consumeIdentifier()
+    if TOKENIZER_LUA_OPERATORS_LOOKUP[identifier] then
+      return { TYPE = "Operator", Value = identifier }
+    elseif TOKENIZER_RESERVED_KEYWORDS_LOOKUP[identifier] then
+      return { TYPE = "Keyword", Value = identifier }
+    elseif TOKENIZER_LUA_CONSTANTS_LOOKUP[identifier] then
+      return { TYPE = "Constant", Value = identifier }
     end
-    return { TYPE = "Character", Value = curChar }
-  end
-
-  --// MAIN //--
-  local function tokenize()
-    local tokens = {}
-    while curChar ~= "\0" do
-      local token = getNextToken()
-      if token then
-        table.insert(tokens, token)
-      end
-      consume()
-    end
-    return tokens
+    return { TYPE = "Identifier", Value = identifier }
+  elseif self:isString() then
+    return { TYPE = "String", Value = self:consumeString() }
+  elseif self:isVarArg() then
+    self:consume(2)
+    return { TYPE = "VarArg" }
   end
 
-  return tokenize()
+  local operator = self:consumeOperator()
+  if operator then
+    return { TYPE = "Operator", Value = operator }
+  end
+  return { TYPE = "Character", Value = curChar }
+end
+
+--// Tokenizer Main Method //--
+function TokenizerMethods:tokenize()
+  local tokens, tokenIndex = {}, 1
+  while self.curChar do
+    local token = self:getNextToken()
+    if token then
+      tokens[tokenIndex] = token
+      tokenIndex         = tokenIndex + 1
+    end
+    self:consume(1)
+  end
+  return tokens
+end
+
+--* Tokenizer *--
+local Tokenizer = {}
+function Tokenizer.new(code)
+  local TokenizerInstance = {}
+
+  --// Local Variables //--
+  local charStream = stringToChars(code)
+
+  --// Initialization //--
+  TokenizerInstance.code       = code
+  TokenizerInstance.charStream = charStream
+  TokenizerInstance.curCharPos = 1
+  TokenizerInstance.curChar    = charStream[1]
+
+  --// Method Binding //--
+  insertValues(TokenizerInstance, TokenizerMethods)
+
+  return TokenizerInstance
 end
 
 --[[
@@ -520,6 +599,13 @@ local PARSER_UNARY_OPERATOR_PRECEDENCE = 8
 local PARSER_MULTIRET_NODE_TYPES = createLookupTable({ "FunctionCall", "VarArg" })
 local PARSER_LVALUE_NODE_TYPES   = createLookupTable({ "Variable", "TableIndex" })
 local PARSER_STOP_KEYWORDS       = createLookupTable({ "end", "else", "elseif", "until" })
+
+--[[
+  Precedence and associativity of Lua operators.
+  The lower the number, the lower the priority of the operator.
+  If the right precedence is higher than the left precedence, the operator is right-associative.
+  Right-associative operators are evaluated from right to left.
+--]]
 local PARSER_OPERATOR_PRECEDENCE = {
   ["+"]   = {6, 6},  ["-"]  = {6, 6},
   ["*"]   = {7, 7},  ["/"]  = {7, 7}, ["%"] = {7, 7},
@@ -561,650 +647,791 @@ local PARSER_LUA_BINARY_OPERATORS = createLookupTable({
 
 --]]
 
-local Parser = {}
-function Parser.parse(tokens)
-  local currentToken      = tokens[1]
-  local currentTokenIndex = 1
-  local scopeStack        = {}
-  local currentScope      = {}
+--* ParserMethods *--
+local ParserMethods = {}
 
-  --// TOKEN NAVIGATION //--
-  local function lookAhead(n)
-    local updatedTokenIndex = currentTokenIndex + (n or 1)
-    local updatedToken      = tokens[updatedTokenIndex]
-    return updatedToken
-  end
-  local function consume(n)
-    local updatedTokenIndex = currentTokenIndex + (n or 1)
-    local updatedToken      = tokens[updatedTokenIndex]
-    currentTokenIndex = updatedTokenIndex
-    currentToken      = updatedToken
-    return updatedToken
-  end
+--// Token Navigation //--
+function ParserMethods:lookAhead(n)
+  local updatedTokenIndex = self.currentTokenIndex + n
+  local updatedToken      = self.tokens[updatedTokenIndex]
+  return updatedToken
+end
 
-  --// SCOPE MANAGEMENT //--
-  local function enterScope(isFunctionScope)
-    local scope = {
-      localVariables  = {},
-      isFunctionScope = isFunctionScope
-    }
-    table.insert(scopeStack, scope)
-    currentScope = scope
-    return scope
-  end
-  local function exitScope()
-    scopeStack[#scopeStack] = nil
-    currentScope = scopeStack[#scopeStack]
-  end
+function ParserMethods:consume(n)
+  local updatedTokenIndex = self.currentTokenIndex + n
+  local updatedToken      = self.tokens[updatedTokenIndex]
+  self.currentTokenIndex = updatedTokenIndex
+  self.currentToken      = updatedToken
+  return updatedToken
+end
 
-  --// IN-SCOPE VARIABLE MANAGEMENT //--
-  local function declareLocalVariable(variable)
-    currentScope.localVariables[variable] = true
+--// Scope Management //--
+function ParserMethods:enterScope(isFunctionScope)
+  local scope = {
+    localVariables  = {},
+    isFunctionScope = isFunctionScope
+  }
+  table.insert(self.scopeStack, scope)
+  self.currentScope = scope
+  return scope
+end
+
+function ParserMethods:exitScope()
+  self.scopeStack[#self.scopeStack] = nil
+  self.currentScope = self.scopeStack[#self.scopeStack]
+end
+
+--// In-Scope Variable Management //--
+function ParserMethods:declareLocalVariable(variable)
+  self.currentScope.localVariables[variable] = true
+end
+
+function ParserMethods:declareLocalVariables(variables)
+  for _, variable in ipairs(variables) do
+    self:declareLocalVariable(variable)
   end
-  local function declareLocalVariables(variables)
-    for _, variable in ipairs(variables) do
-      declareLocalVariable(variable)
+end
+
+function ParserMethods:getVariableType(variableName)
+  local isUpvalue = false
+  for scopeIndex = #self.scopeStack, 1, -1 do
+    local scope = self.scopeStack[scopeIndex]
+    if scope.localVariables[variableName] then
+      local variableType = (isUpvalue and "Upvalue") or "Local"
+      return variableType, scopeIndex
+    elseif scope.isFunctionScope then
+      isUpvalue = true
     end
   end
-  local function getVariableType(variableName)
-    local isUpvalue = false
-    for scopeIndex = #scopeStack, 1, -1 do
-      local scope = scopeStack[scopeIndex]
-      if scope.localVariables[variableName] then
-        local variableType = (isUpvalue and "Upvalue") or "Local"
-        return variableType, scopeIndex
-      elseif scope.isFunctionScope then
-        isUpvalue = true
-      end
+  return "Global"
+end
+
+--// Token Checkers //--
+function ParserMethods:checkCharacter(character, token)
+  token = token or self.currentToken
+  return token
+        and token.TYPE  == "Character"
+        and token.Value == character
+end
+
+function ParserMethods:checkKeyword(keyword, token)
+  token = token or self.currentToken
+  return token
+        and token.TYPE  == "Keyword"
+        and token.Value == keyword
+end
+
+function ParserMethods:isComma(token)
+  return token
+        and token.TYPE == "Character"
+        and token.Value == ","
+end
+
+function ParserMethods:isUnaryOperator(token)
+  return token
+        and token.TYPE == "Operator"
+        and PARSER_LUA_UNARY_OPERATORS[token.Value]
+end
+
+function ParserMethods:isBinaryOperator(token)
+  return token
+        and token.TYPE == "Operator"
+        and PARSER_LUA_BINARY_OPERATORS[token.Value]
+end
+
+--// AST Node Checkers //--
+function ParserMethods:isValidAssignmentLvalue(node)
+  return PARSER_LVALUE_NODE_TYPES[node.TYPE]
+end
+function ParserMethods:isMultiretNode(node)
+  return PARSER_MULTIRET_NODE_TYPES[node.TYPE]
+end
+
+--// Token Expectation //--
+function ParserMethods:expectTokenType(expectedType, skipConsume)
+  local actualType = self.currentToken and self.currentToken.TYPE or "nil"
+  assert(actualType == expectedType, string.format("Expected a %s, got: %s", expectedType, actualType))
+  if not skipConsume then self:consume(1) end
+  return self.currentToken
+end
+
+function ParserMethods:expectCharacter(character, skipConsume)
+  local actualType = self.currentToken and self.currentToken.TYPE or "nil"
+  assert(self.currentToken and self.currentToken.TYPE == "Character", "Expected a character, got: " .. actualType)
+  assert(self.currentToken.Value == character, "Expected '" .. character .. "'")
+  if not skipConsume then self:consume(1) end
+  return self.currentToken
+end
+
+function ParserMethods:expectKeyword(keyword, skipConsume)
+  local actualType = self.currentToken and self.currentToken.TYPE or "nil"
+  assert(self.currentToken and self.currentToken.TYPE == "Keyword", "Expected a keyword, got: " .. actualType)
+  assert(self.currentToken.Value == keyword, "Expected '" .. keyword .. "'")
+  if not skipConsume then self:consume(1) end
+  return self.currentToken
+end
+
+--// Auxiliary Functions //--
+function ParserMethods:createNilNode()
+  return { TYPE = "Constant", Value = "nil" }
+end
+
+function ParserMethods:adjustMultiretNodes(nodeList, expectedReturnAmount)
+  local lastNode = nodeList[#nodeList]
+  local extraReturns = expectedReturnAmount - #nodeList
+  if lastNode and self:isMultiretNode(lastNode) then
+    extraReturns = math.max(extraReturns + 1, -1)
+    -- Adjust the return value amount
+    lastNode.ReturnValueAmount = extraReturns
+  else
+    for _ = 1, extraReturns do
+      table.insert(nodeList, self:createNilNode())
     end
-    return "Global"
   end
+end
 
-  --// TOKEN CHECKERS //--
-  local function checkCharacter(character, token)
-    token = token or currentToken
-    return token
-          and token.TYPE  == "Character"
-          and token.Value == character
+--// Parsers //--
+function ParserMethods:consumeIdentifierList()
+  local identifiers = {}
+  while self.currentToken.TYPE == "Identifier" do
+    table.insert(identifiers, self.currentToken.Value)
+    if not self:isComma(self:lookAhead(1)) then break end
+    self:consume(2) -- Consume identifier and ","
   end
-  local function checkKeyword(keyword, token)
-    token = token or currentToken
-    return token
-          and token.TYPE  == "Keyword"
-          and token.Value == keyword
-  end
-  local function isComma(token)
-    return token
-          and token.TYPE == "Character"
-          and token.Value == ","
-  end
-  local function isUnaryOperator(token)
-    return token
-          and token.TYPE == "Operator"
-          and PARSER_LUA_UNARY_OPERATORS[token.Value]
-  end
-  local function isBinaryOperator(token)
-    return token
-          and token.TYPE == "Operator"
-          and PARSER_LUA_BINARY_OPERATORS[token.Value]
-  end
+  return identifiers
+end
 
-  --// NODE CHECKERS //--
-  local function isValidAssignmentLvalue(node)
-    return PARSER_LVALUE_NODE_TYPES[node.TYPE]
+function ParserMethods:consumeParameterList()
+  self:expectCharacter("(")
+  local parameters, isVarArg = {}, false
+  while not self:checkCharacter(")") do
+    if self.currentToken.TYPE == "Identifier" then
+      table.insert(parameters, self.currentToken.Value)
+    elseif self.currentToken.TYPE == "VarArg" then
+      isVarArg = true
+      self:consume(1) -- Consume the "..."
+      break
+    end
+    self:consume(1) -- Consume the last token of the parameter
+    if not self:isComma(self.currentToken) then break end
+    self:consume(1) -- Consume the comma
   end
-  local function isMultiretNode(node)
-    return PARSER_MULTIRET_NODE_TYPES[node.TYPE]
-  end
+  self:expectCharacter(")")
+  return parameters, isVarArg
+end
 
-  --// EXPECTORS //--
-  local function expectTokenType(expectedType, skipConsume)
-    local actualType = currentToken and currentToken.TYPE or "nil"
-    assert(actualType == expectedType, string.format("Expected a %s, got: %s", expectedType, actualType))
-    if not skipConsume then consume() end
-    return currentToken
-  end
-  local function expectCharacter(character, skipConsume)
-    local actualType = currentToken and currentToken.TYPE or "nil"
-    assert(currentToken and currentToken.TYPE == "Character", "Expected a character, got: " .. actualType)
-    assert(currentToken.Value == character, "Expected '" .. character .. "'")
-    if not skipConsume then consume() end
-    return currentToken
-  end
-  local function expectKeyword(keyword, skipConsume)
-    local actualType = currentToken and currentToken.TYPE or "nil"
-    assert(currentToken and currentToken.TYPE == "Keyword", "Expected a keyword, got: " .. actualType)
-    assert(currentToken.Value == keyword, "Expected '" .. keyword .. "'")
-    if not skipConsume then consume() end
-    return currentToken
-  end
+function ParserMethods:consumeTableIndex(currentExpression)
+  self:consume(1) -- Consume the "." symbol
+  local indexToken = { TYPE = "String",
+    Value = self.currentToken.Value
+  }
+  return { TYPE = "TableIndex",
+    Index = indexToken,
+    Expression = currentExpression
+  }
+end
 
-  --// AUXILIARY FUNCTIONS //--
-  local function createNilNode()
-    return { TYPE = "Constant", Value = "nil" }
-  end
-  local function adjustMultiretNodes(nodeList, expectedReturnAmount)
-    local lastNode = nodeList[#nodeList]
-    local extraReturns = expectedReturnAmount - #nodeList
-    if lastNode and isMultiretNode(lastNode) then
-      extraReturns = math.max(extraReturns + 1, -1)
-      -- Adjust the return value amount
-      lastNode.ReturnValueAmount = extraReturns
+function ParserMethods:consumeBracketTableIndex(currentExpression)
+  self:consume(1) -- Consume the "[" symbol
+  local indexExpression = self:consumeExpression()
+  self:consume(1) -- Consume the last token of the index expression
+  self:expectCharacter("]", true)
+  return { TYPE = "TableIndex",
+    Index = indexExpression,
+    Expression = currentExpression
+  }
+end
+
+function ParserMethods:consumeTable()
+  self:consume(1) -- Consume the "{" symbol
+  local elements            = {}
+  local implicitElements    = {}
+  local explicitElements    = {}
+  local internalImplicitKey = 1
+
+  -- Loop until we find a "}" (end of the table)
+  while not self:checkCharacter("}") do
+    local key, value
+    local isImplicitKey = false
+    if self:checkCharacter("[") then
+      -- [<expression>] = <expression>
+      self:consume(1) -- Consume "["
+      key = self:consumeExpression()
+      self:consume(1) -- Consume the last token of the key
+      self:expectCharacter("]")
+      self:expectCharacter("=")
+      value = self:consumeExpression()
+    elseif self.currentToken.TYPE == "Identifier"
+           and self:checkCharacter("=", self:lookAhead(1)) then
+      -- <identifier> = <expression>
+      key = { TYPE = "String",
+        Value = self.currentToken.Value
+      }
+      self:consume(2) -- Consume key and "="
+      value = self:consumeExpression()
     else
-      for _ = 1, extraReturns do
-        table.insert(nodeList, createNilNode())
-      end
+      -- <expression>
+      key = { TYPE = "Number",
+        Value = internalImplicitKey
+      }
+      internalImplicitKey = internalImplicitKey + 1
+      isImplicitKey = true
+      value = self:consumeExpression()
+    end
+    local element = { Key = key, Value = value, IsImplicitKey = isImplicitKey }
+    local tableToInsert = (isImplicitKey and implicitElements) or explicitElements
+    table.insert(tableToInsert, element)
+    table.insert(elements, element)
+
+    self:consume(1) -- Consume the last token of the expression
+
+    -- Table elements can be separated by "," or ";"
+    local shouldContinue = self:checkCharacter(",") or self:checkCharacter(";")
+    if not shouldContinue then break end
+    self:consume(1) -- Consume ","
+  end
+  local lastElement = elements[#elements]
+  if lastElement and lastElement.IsImplicitKey then
+    local lastElementValue = lastElement.Value.Value
+    if self:isMultiretNode(lastElementValue) then
+      lastElementValue.ReturnValueAmount = -1
     end
   end
 
-  --// PARSERS //--
-  local getNextNode, parseCodeBlock
-  local consumeExpression, consumeExpressions
-  local function consumeIdentifierList()
-    local identifiers = {}
-    while currentToken.TYPE == "Identifier" do
-      table.insert(identifiers, currentToken.Value)
-      if not isComma(lookAhead()) then break end
-      consume(2) -- Consume identifier and ","
-    end
-    return identifiers
-  end
-  local function consumeParameterList()
-    expectCharacter("(")
-    local parameters, isVarArg = {}, false
-    while not checkCharacter(")") do
-      if currentToken.TYPE == "Identifier" then
-        table.insert(parameters, currentToken.Value)
-      elseif currentToken.TYPE == "VarArg" then
-        isVarArg = true
-        consume() -- Consume the "..."
-        break
-      end
-      consume() -- Consume the last token of the parameter
-      if not isComma(currentToken) then break end
-      consume() -- Consume the comma
-    end
-    expectCharacter(")")
-    return parameters, isVarArg
-  end
-  local function consumeTableIndex(currentExpression)
-    consume() -- Consume the "." symbol
-    local indexToken = { TYPE = "String", Value = currentToken.Value }
-    return { TYPE = "TableIndex", Index = indexToken, Expression = currentExpression }
-  end
-  local function consumeBracketTableIndex(currentExpression)
-    consume() -- Consume the "[" symbol
-    local indexExpression = consumeExpression()
-    consume() -- Consume the last token of the index expression
-    expectCharacter("]", true)
-    return { TYPE = "TableIndex", Index = indexExpression, Expression = currentExpression }
-  end
-  local function consumeTable()
-    consume() -- Consume the "{" symbol
-    local elements            = {}
-    local implicitElements    = {}
-    local explicitElements    = {}
-    local internalImplicitKey = 1
+  return { TYPE = "Table",
+    Elements         = elements,
+    ImplicitElements = implicitElements,
+    ExplicitElements = explicitElements }
+end
 
-    -- Loop until we find a "}" (end of the table)
-    while not checkCharacter("}") do
-      local key, value
-      local isImplicitKey = false
-      if checkCharacter("[") then
-        -- [<expression>] = <expression>
-        consume() -- Consume "["
-        key = consumeExpression()
-        consume() -- Consume the last token of the key
-        expectCharacter("]")
-        expectCharacter("=")
-        value = consumeExpression()
-      elseif currentToken.TYPE == "Identifier" and checkCharacter("=", lookAhead()) then
-        -- <identifier> = <expression>
-        key = { TYPE = "String", Value = currentToken.Value }
-        consume(2) -- Consume key and "="
-        value = consumeExpression()
-      else
-        -- <expression>
-        key = { TYPE = "Number", Value = internalImplicitKey }
-        internalImplicitKey = internalImplicitKey + 1
-        isImplicitKey = true
-        value = consumeExpression()
-      end
-      local element = { Key = key, Value = value, IsImplicitKey = isImplicitKey }
-      local tableToInsert = (isImplicitKey and implicitElements) or explicitElements
-      table.insert(tableToInsert, element)
-      table.insert(elements, element)
+function ParserMethods:consumeFunctionCall(currentExpression)
+  self:consume(1) -- Consume the "("
+  local arguments = self:consumeExpressions()
+  self:adjustMultiretNodes(arguments, -1)
+  self:consume(1) -- Consume the last token of the expression
+  return { TYPE = "FunctionCall",
+    Expression = currentExpression,
+    Arguments = arguments,
+    ReturnValueAmount = 1,
+    WithSelf = false
+  }
+end
 
-      consume() -- Consume the last token of the expression
-      -- Table elements can be separated by "," or ";"
-      local shouldContinue = checkCharacter(",") or checkCharacter(";")
-      if not shouldContinue then break end
-      consume() -- Consume ","
-    end
-    local lastElement = elements[#elements]
-    if lastElement and lastElement.IsImplicitKey then
-      local lastElementValue = lastElement.Value.Value
-      if isMultiretNode(lastElementValue) then
-        lastElementValue.ReturnValueAmount = -1
-      end
-    end
+function ParserMethods:consumeImplicitFunctionCall(lvalue)
+  local currentTokenType = self.currentToken.TYPE
 
-    return { TYPE = "Table",
-      Elements         = elements,
-      ImplicitElements = implicitElements,
-      ExplicitElements = explicitElements }
-  end
-  local function consumeFunctionCall(currentExpression)
-    consume() -- Consume the "("
-    local arguments = consumeExpressions()
-    adjustMultiretNodes(arguments, -1)
-    consume() -- Consume the last token of the expression
-    return { TYPE = "FunctionCall", Expression = currentExpression, Arguments = arguments, ReturnValueAmount = 1, WithSelf = false }
-  end
-  local function consumeImplicitFunctionCall(lvalue)
-    local currentTokenType = currentToken.TYPE
-
-    -- <string>?
-    if currentTokenType == "String" then
-      local arguments = { currentToken }
-      return { TYPE = "FunctionCall", Expression = lvalue, Arguments = arguments, ReturnValueAmount = 1, WithSelf = false }
-    end
-
-    -- <table>
-    local arguments = { consumeTable() }
-    return { TYPE = "FunctionCall", Expression = lvalue, Arguments = arguments, ReturnValueAmount = 1, WithSelf = false }
-  end
-  local function consumeMethodCall(currentExpression)
-    local methodIdentifier = consume().Value -- Consume the ":" character, and get the method identifier
-    consume() -- Consume the method identifier
-    local methodIndexNode = { TYPE = "TableIndex", Index = { TYPE = "String", Value = methodIdentifier }, Expression = currentExpression }
-    local functionCallNode = consumeFunctionCall(methodIndexNode)
-    functionCallNode.WithSelf = true -- Mark the function call as a method call
-    return functionCallNode
-  end
-  local function consumeOptionalSemilcolon()
-    local nextToken = lookAhead()
-    if checkCharacter(";", nextToken) then
-      consume()
-    end
+  -- <string>?
+  if currentTokenType == "String" then
+    local arguments = { self.currentToken }
+    return {
+      TYPE = "FunctionCall",
+      Expression = lvalue,
+      Arguments = arguments,
+      ReturnValueAmount = 1,
+      WithSelf = false
+    }
   end
 
-  --// EXPRESSSION PARSERS //--
-  local parsePrimaryExpression, parseSuffixExpression,
-        parsePrefixExpression,  parseUnaryOperator,
-        parseBinaryExpression
-  function parsePrimaryExpression()
-    if not currentToken then return end
-    local tokenType = currentToken.TYPE
-    local tokenValue = currentToken.Value
+  -- <table>
+  local arguments = { self:consumeTable() }
+  return { TYPE = "FunctionCall",
+    Expression = lvalue,
+    Arguments = arguments,
+    ReturnValueAmount = 1,
+    WithSelf = false
+  }
+end
 
-    if tokenType == "Number" or tokenType == "String" or tokenType == "Constant" then
-      return currentToken
-    elseif tokenType == "VarArg" then
-      currentToken.ReturnValueAmount = 1
-      return currentToken
-    elseif tokenType == "Identifier" then
-      local variableType = getVariableType(tokenValue)
-      local variableNode = { TYPE = "Variable", Value = tokenValue, VariableType = variableType }
-      return variableNode
-    elseif tokenType == "Character" then
-      if tokenValue == "(" then -- Parenthesized expression
-        consume() -- Consume the parenthesis
-        local expression = consumeExpression()
-        consume() -- Consume the last token of the expression
-        return expression
-      elseif tokenValue == "{" then -- Table constructor
-        return consumeTable()
-      end
-    elseif tokenType == "Keyword" then
-      if tokenValue == "function" then
-        consume() -- Consume the "function" token
-        local parameters, isVarArg = consumeParameterList()
-        local codeblock = parseCodeBlock(true, parameters)
-        expectKeyword("end", true)
-        return { TYPE = "Function", CodeBlock = codeblock, Parameters = parameters, IsVarArg = isVarArg }
-      end
-    end
-    return nil
+function ParserMethods:consumeMethodCall(currentExpression)
+  local methodIdentifier = self:consume(1).Value -- Consume the ":" character, and get the method identifier
+  self:consume(1) -- Consume the method identifier
+  local methodIndexNode = { TYPE = "TableIndex",
+    Index = { TYPE = "String",
+      Value = methodIdentifier
+    },
+    Expression = currentExpression
+  }
+  local functionCallNode = self:consumeFunctionCall(methodIndexNode)
+  functionCallNode.WithSelf = true -- Mark the function call as a method call
+  return functionCallNode
+end
+
+function ParserMethods:consumeOptionalSemilcolon()
+  local nextToken = self:lookAhead(1)
+  if self:checkCharacter(";", nextToken) then
+    self:consume(1)
   end
-  function parseSuffixExpression(primaryExpression)
-    local nextToken = lookAhead()
-    local nextTokenValue = nextToken and nextToken.Value
-    if nextTokenValue == "(" then -- Function call
-      consume()
-      -- <expression> \( <args> \)
-      return consumeFunctionCall(primaryExpression)
-    elseif nextTokenValue == "." then -- Table access
-      consume()
-      -- <expression> \. <identifier>
-      return consumeTableIndex(primaryExpression)
-    elseif nextTokenValue == ":" then -- Method call
-      consume()
-      -- <expression> \: <identifier> \( <args> \)
-      return consumeMethodCall(primaryExpression)
-    elseif nextTokenValue == "[" then -- Table index
-      consume()
-      -- <expression> \[ <expression> \]
-      return consumeBracketTableIndex(primaryExpression)
-    elseif nextToken then
-      -- In some edge cases, a user may call a function using only string,
-      -- example: `print "Hello, World!"`. This is a valid Lua syntax.
-      -- Let's handle both strings and tables here for that case.
-      local nextTokenType = nextToken.TYPE
-      if nextTokenType == "String" or (nextTokenValue == "{" and nextTokenType == "Character") then
-        consume()
-        return consumeImplicitFunctionCall(primaryExpression)
-      end
+end
+
+--// EXPRESSSION PARSERS //--
+function ParserMethods:parsePrimaryExpression()
+  if not self.currentToken then return end
+  local tokenType = self.currentToken.TYPE
+  local tokenValue = self.currentToken.Value
+
+  if     tokenType == "Number"   then return { TYPE = "Number",   Value = tokenValue    }
+  elseif tokenType == "String"   then return { TYPE = "String",   Value = tokenValue    }
+  elseif tokenType == "Constant" then return { TYPE = "Constant", Value = tokenValue    }
+  elseif tokenType == "VarArg"   then return { TYPE = "VarArg",   ReturnValueAmount = 1 }
+  elseif tokenType == "Identifier" then
+    local variableType = self:getVariableType(tokenValue)
+    local variableNode = { TYPE = "Variable",
+      Value = tokenValue,
+      VariableType = variableType
+    }
+    return variableNode
+  elseif tokenType == "Character" then
+    if tokenValue == "(" then -- Parenthesized expression
+      self:consume(1) -- Consume the parenthesis
+      local expression = self:consumeExpression()
+      self:consume(1) -- Consume the last token of the expression
+      return expression
+    elseif tokenValue == "{" then -- Table constructor
+      return self:consumeTable()
     end
-    return nil
+  elseif tokenType == "Keyword" then
+    if tokenValue == "function" then
+      self:consume(1) -- Consume the "function" token
+      local parameters, isVarArg = self:consumeParameterList()
+      local codeblock = self:parseCodeBlock(true, parameters)
+      self:expectKeyword("end", true)
+      return { TYPE = "Function",
+        CodeBlock = codeblock,
+        Parameters = parameters,
+        IsVarArg = isVarArg
+      }
+    end
   end
-  function parsePrefixExpression()
-    local primaryExpression = parsePrimaryExpression() -- <primary>
-    if not primaryExpression then return end
+  return nil
+end
 
-    -- <suffix>*
-    while (true) do
-      local newExpression = parseSuffixExpression(primaryExpression)
-      if not newExpression then break end
-      primaryExpression = newExpression
+function ParserMethods:parseSuffixExpression(primaryExpression)
+  local nextToken = self:lookAhead(1)
+  local nextTokenValue = nextToken and nextToken.Value
+  if nextTokenValue == "(" then -- Function call
+    self:consume(1)
+    -- <expression> \( <args> \)
+    return self:consumeFunctionCall(primaryExpression)
+  elseif nextTokenValue == "." then -- Table access
+    self:consume(1)
+    -- <expression> \. <identifier>
+    return self:consumeTableIndex(primaryExpression)
+  elseif nextTokenValue == ":" then -- Method call
+    self:consume(1)
+    -- <expression> \: <identifier> \( <args> \)
+    return self:consumeMethodCall(primaryExpression)
+  elseif nextTokenValue == "[" then -- Table index
+    self:consume(1)
+    -- <expression> \[ <expression> \]
+    return self:consumeBracketTableIndex(primaryExpression)
+  elseif nextToken then
+    -- In some edge cases, a user may call a function using only string,
+    -- example: `print "Hello, World!"`. This is a valid Lua syntax.
+    -- Let's handle both strings and tables here for that case.
+    local nextTokenType = nextToken.TYPE
+    if nextTokenType == "String" or (nextTokenValue == "{" and nextTokenType == "Character") then
+      self:consume(1)
+      return self:consumeImplicitFunctionCall(primaryExpression)
     end
-
-    return primaryExpression
   end
-  function parseUnaryOperator()
-    local unaryOperator = currentToken
-    -- <unary> ::= <unary operator> <unary> | <primary>
-    if not isUnaryOperator(currentToken) then
-      return parsePrefixExpression()
-    end
+  return nil
+end
 
-    -- <unary operator> <unary>
-    consume() -- Consume the operator
-    local expression = parseBinaryExpression(PARSER_UNARY_OPERATOR_PRECEDENCE)
-    return { TYPE = "UnaryOperator", Operator = unaryOperator.Value, Operand = expression }
-  end
-  function parseBinaryExpression(minPrecedence)
-    -- <binary> ::= <unary> <binary operator> <binary> | <unary>
-    minPrecedence = minPrecedence or 0
-    local expression = parseUnaryOperator() -- <unary>
-    if not expression then return end
+function ParserMethods:parsePrefixExpression()
+  local primaryExpression = self:parsePrimaryExpression() -- <primary>
+  if not primaryExpression then return end
 
-    -- [<binary operator> <binary>]
-    while true do
-      local operatorToken = lookAhead()
-      local precedence = operatorToken and PARSER_OPERATOR_PRECEDENCE[operatorToken.Value]
-      if not isBinaryOperator(operatorToken) or precedence[1] <= minPrecedence then
-        break
-      end
-
-      -- The <binary operator> <binary> part itself
-      local nextToken = consume(2) -- Advance to and consume the operator
-      if not nextToken then error("Unexpected end") end
-
-      local right = parseBinaryExpression(precedence[2])
-      if not right then error("Unexpected end") end
-
-      expression = { TYPE = "BinaryOperator",
-        Operator = operatorToken.Value,
-        Left = expression, Right = right }
-    end
-    return expression
-  end
-  function consumeExpression(returnRawNode)
-    local expression = parseBinaryExpression(0)
-    if not expression then
-      -- Backtrack to the last token
-      consume(-1)
-      return
-    end
-    if returnRawNode then return expression end
-    return { TYPE = "Expression", Value = expression }
-  end
-  function consumeExpressions()
-    local expressions = { consumeExpression(true) }
-    if #expressions == 0 then return {} end
-
-    local nextToken = lookAhead()
-    while isComma(nextToken) do
-      consume(2) -- Consume the last token of the last expression and ","
-      local expression = consumeExpression(true)
-      table.insert(expressions, expression)
-      nextToken = lookAhead()
-    end
-
-    return expressions
+  -- <suffix>*
+  while (true) do
+    local newExpression = self:parseSuffixExpression(primaryExpression)
+    if not newExpression then break end
+    primaryExpression = newExpression
   end
 
-  --// STATEMENT PARSERS //--
-  local function parseLocal()
-    consume() -- Consume the "local" token
-    if checkKeyword("function") then
-      consume() -- Consume the "function" token
-      local name = currentToken.Value
-      consume() -- Consume the last token of the identifier)
-      local parameters, isVarArg = consumeParameterList()
-      declareLocalVariable(name)
-      local codeblock = parseCodeBlock(true, parameters)
-      expectKeyword("end", true)
-      return { TYPE = "LocalFunctionDeclaration", Name = name, CodeBlock = codeblock, Parameters = parameters, IsVarArg = isVarArg }
+  return primaryExpression
+end
+
+function ParserMethods:parseUnaryOperator()
+  local unaryOperator = self.currentToken
+  -- <unary> ::= <unary operator> <unary> | <primary>
+  if not self:isUnaryOperator(self.currentToken) then
+    return self:parsePrefixExpression()
+  end
+
+  -- <unary operator> <unary>
+  self:consume(1) -- Consume the operator
+  local expression = self:parseBinaryExpression(PARSER_UNARY_OPERATOR_PRECEDENCE)
+  return { TYPE = "UnaryOperator",
+    Operator = unaryOperator.Value,
+    Operand = expression
+  }
+end
+
+function ParserMethods:parseBinaryExpression(minPrecedence)
+  -- <binary> ::= <unary> <binary operator> <binary> | <unary>
+  minPrecedence = minPrecedence or 0
+  local expression = self:parseUnaryOperator() -- <unary>
+  if not expression then return end
+
+  -- [<binary operator> <binary>]
+  while true do
+    local operatorToken = self:lookAhead(1)
+    local precedence = operatorToken and PARSER_OPERATOR_PRECEDENCE[operatorToken.Value]
+    if not self:isBinaryOperator(operatorToken) or precedence[1] <= minPrecedence then
+      break
     end
-    local variables = consumeIdentifierList()
-    if checkCharacter("=", lookAhead()) then
-      consume() -- Consume the last token of the last identifier
-      expectCharacter("=")
-      local expressions = consumeExpressions()
-      adjustMultiretNodes(expressions, #variables)
-      declareLocalVariables(variables)
-      return { TYPE = "LocalDeclaration", Variables = variables, Expressions = expressions }
-    end
-    declareLocalVariables(variables)
-    return { TYPE = "LocalDeclaration", Variables = variables, Expressions = {} }
+
+    -- The <binary operator> <binary> part itself
+    local nextToken = self:consume(2) -- Advance to and consume the operator
+    if not nextToken then error("Unexpected end") end
+
+    local right = self:parseBinaryExpression(precedence[2])
+    if not right then error("Unexpected end") end
+
+    expression = { TYPE = "BinaryOperator",
+      Operator = operatorToken.Value,
+      Left = expression, Right = right
+    }
   end
-  local function parseWhile()
-    consume() -- Consume the "while" token
-    local condition = consumeExpression()
-    consume() -- Consume the last token of the condition
-    expectKeyword("do")
-    local codeblock = parseCodeBlock()
-    expectKeyword("end", true)
-    return { TYPE = "WhileLoop", Condition = condition, CodeBlock = codeblock }
+  return expression
+end
+
+function ParserMethods:consumeExpression(returnRawNode)
+  local expression = self:parseBinaryExpression(0)
+  if not expression then
+    -- Backtrack to the last token
+    self:consume(-1)
+    return
   end
-  local function parseRepeat()
-    consume() -- Consume the "repeat" token
-    local codeblock = parseCodeBlock()
-    expectKeyword("until")
-    local condition = consumeExpression()
-    return { TYPE = "RepeatLoop", CodeBlock = codeblock, Condition = condition }
+  if returnRawNode then return expression end
+  return { TYPE = "Expression",
+    Value = expression
+  }
+end
+
+function ParserMethods:consumeExpressions()
+  local expressions = { self:consumeExpression(true) }
+  if #expressions == 0 then return {} end
+
+  local nextToken = self:lookAhead(1)
+  while self:isComma(nextToken) do
+    self:consume(2) -- Consume the last token of the last expression and ","
+    local expression = self:consumeExpression(true)
+    table.insert(expressions, expression)
+    nextToken = self:lookAhead(1)
   end
-  local function parseDo()
-    consume() -- Consume the "do" token
-    local codeblock = parseCodeBlock()
-    expectKeyword("end", true)
-    return { TYPE = "DoBlock", CodeBlock = codeblock }
-  end
-  local function parseReturn()
-    consume() -- Consume the "return" token
-    local expressions = consumeExpressions()
-    adjustMultiretNodes(expressions, -1)
-    return { TYPE = "ReturnStatement", Expressions = expressions }
-  end
-  local function parseBreak()
-    return { TYPE = "BreakStatement" }
-  end
-  local function parseIf()
-    consume() -- Consume the "if" token
-    local ifCondition = consumeExpression()
-    consume() -- Consume the last token of the if condition
-    expectKeyword("then")
-    local ifCodeBlock = parseCodeBlock()
-    local branches = { { Condition = ifCondition, CodeBlock = ifCodeBlock } }
-    while checkKeyword("elseif") do
-      consume() -- Consume the "elseif" token
-      local elseifCondition = consumeExpression()
-      consume() -- Consume the last token of the elseif condition
-      expectKeyword("then")
-      local elseifCodeBlock = parseCodeBlock()
-      table.insert(branches, { Condition = elseifCondition, CodeBlock = elseifCodeBlock })
-    end
-    local elseCodeBlock
-    if checkKeyword("else") then
-      consume() -- Consume the "else" token
-      elseCodeBlock = parseCodeBlock()
-    end
-    expectKeyword("end", true)
-    return { TYPE = "IfStatement", Branches = branches, ElseCodeBlock = elseCodeBlock }
-  end
-  local function parseFor()
-    consume() -- Consume the "for" token
-    local variableName = expectTokenType("Identifier", true).Value
-    consume() -- Consume the variable name
-    if checkCharacter(",") or checkKeyword("in") then
-      local iteratorVariables = { variableName }
-      while checkCharacter(",") do
-        consume() -- Consume the comma
-        local newVariableName = expectTokenType("Identifier", true).Value
-        table.insert(iteratorVariables, newVariableName)
-        consume() -- Consume the variable name
-      end
-      expectKeyword("in")
-      local expressions = consumeExpressions()
-      adjustMultiretNodes(expressions, 3)
-      consume() -- Consume the last token of the expressions
-      expectKeyword("do")
-      local codeblock = parseCodeBlock(false, iteratorVariables)
-      expectKeyword("end", true)
-      return { TYPE = "GenericForLoop", IteratorVariables = iteratorVariables, Expressions = expressions, CodeBlock = codeblock }
-    end
-    expectCharacter("=")
-    local expressions = consumeExpressions()
-    consume() -- Consume the last token of the expressions
-    expectKeyword("do")
-    local codeblock = parseCodeBlock(false, { variableName })
-    expectKeyword("end", true)
-    return { TYPE = "NumericForLoop", VariableName = variableName, Expressions = expressions, CodeBlock = codeblock }
-  end
-  local function parseFunction()
-    consume() -- Consume the "function" token
-    local variableName = expectTokenType("Identifier", true).Value
-    local variableType = getVariableType(variableName)
-    local expression = { TYPE = "Variable", Value = variableName, VariableType = variableType }
-    local fields, isMethod = { }, false
-    while consume() do
-      if checkCharacter(".") then
-        consume() -- Consume the "."
-        local fieldName = expectTokenType("Identifier", true).Value
-        table.insert(fields, fieldName)
-      elseif checkCharacter(":") then
-        consume() -- Consume the ":"
-        local methodName = expectTokenType("Identifier", true).Value
-        table.insert(fields, methodName)
-        isMethod = true
-        consume() -- Consume the method name
-        break
-      else break end
-    end
-    local parameters, isVarArg = consumeParameterList()
-    if isMethod then
-      table.insert(parameters, 1, "self")
-    end
-    local codeblock = parseCodeBlock(true, parameters)
-    expectKeyword("end", true)
-    return { TYPE = "FunctionDeclaration",
-      Expression = expression,
-      Fields = fields,
-      IsMethod = isMethod,
+
+  return expressions
+end
+
+--// STATEMENT PARSERS //--
+function ParserMethods:parseLocal()
+  self:consume(1) -- Consume the "local" token
+  if self:checkKeyword("function") then
+    self:consume(1) -- Consume the "function" token
+    local name = self.currentToken.Value
+    self:consume(1) -- Consume the last token of the identifier)
+    local parameters, isVarArg = self:consumeParameterList()
+    self:declareLocalVariable(name)
+    local codeblock = self:parseCodeBlock(true, parameters)
+    self:expectKeyword("end", true)
+    return { TYPE = "LocalFunctionDeclaration",
+      Name = name,
       CodeBlock = codeblock,
       Parameters = parameters,
       IsVarArg = isVarArg
     }
   end
-  local function parseAssignment(lvalue)
-    local lvalues = { lvalue }
-    consume() -- Consume the last token of the lvalue
-    while isComma(currentToken) do
-      consume() -- Consume the comma
-      local nextLValue = parsePrefixExpression()
-      if not nextLValue then error("Expected an lvalue") end
-      if not isValidAssignmentLvalue(nextLValue) then
-        error("Expected a variable or index, got: " .. nextLValue.TYPE)
-      end
-      table.insert(lvalues, nextLValue)
-      consume() -- Consume the last token of the lvalue
-    end
-    expectCharacter("=")
-    local expressions = consumeExpressions()
-    adjustMultiretNodes(expressions, #lvalues)
-    return { TYPE = "VariableAssignment", LValues = lvalues, Expressions = expressions }
+  local variables = self:consumeIdentifierList()
+  if self:checkCharacter("=", self:lookAhead(1)) then
+    self:consume(1) -- Consume the last token of the last identifier
+    self:expectCharacter("=")
+    local expressions = self:consumeExpressions()
+    self:adjustMultiretNodes(expressions, #variables)
+    self:declareLocalVariables(variables)
+    return { TYPE = "LocalDeclaration",
+      Variables = variables,
+      Expressions = expressions
+    }
   end
-  local function parseFunctionCallOrVariableAssignment()
-    local lvalue = parsePrefixExpression()
-    local lvalueType = tostring(lvalue and lvalue.TYPE)
-    if lvalue then
-      if isValidAssignmentLvalue(lvalue) then
-        return parseAssignment(lvalue)
-      elseif lvalueType == "FunctionCall" then
-        lvalue.ReturnValueAmount = 0
-        return lvalue
-      end
-      error("Unexpected lvalue type: " .. lvalueType)
+  self:declareLocalVariables(variables)
+  return { TYPE = "LocalDeclaration",
+    Variables = variables,
+    Expressions = {}
+  }
+end
+
+function ParserMethods:parseWhile()
+  self:consume(1) -- Consume the "while" token
+  local condition = self:consumeExpression()
+  self:consume(1) -- Consume the last token of the condition
+  self:expectKeyword("do")
+  local codeblock = self:parseCodeBlock()
+  self:expectKeyword("end", true)
+  return { TYPE = "WhileLoop",
+    Condition = condition,
+    CodeBlock = codeblock
+  }
+end
+
+function ParserMethods:parseRepeat()
+  self:consume(1) -- Consume the "repeat" token
+  local codeblock = self:parseCodeBlock()
+  self:expectKeyword("until")
+  local condition = self:consumeExpression()
+  return { TYPE = "RepeatLoop",
+    CodeBlock = codeblock,
+    Condition = condition
+  }
+end
+
+function ParserMethods:parseDo()
+  self:consume(1) -- Consume the "do" token
+  local codeblock = self:parseCodeBlock()
+  self:expectKeyword("end", true)
+  return { TYPE = "DoBlock",
+    CodeBlock = codeblock
+  }
+end
+
+function ParserMethods:parseReturn()
+  self:consume(1) -- Consume the "return" token
+  local expressions = self:consumeExpressions()
+  self:adjustMultiretNodes(expressions, -1)
+  return { TYPE = "ReturnStatement",
+    Expressions = expressions
+  }
+end
+
+function ParserMethods:parseBreak()
+  return { TYPE = "BreakStatement" }
+end
+
+function ParserMethods:parseIf()
+  self:consume(1) -- Consume the "if" token
+  local ifCondition = self:consumeExpression()
+  self:consume(1) -- Consume the last token of the if condition
+  self:expectKeyword("then")
+  local ifCodeBlock = self:parseCodeBlock()
+  local branches = { TYPE = "IfBranchList",
+    { TYPE = "IfBranch",
+      Condition = ifCondition,
+      CodeBlock = ifCodeBlock
+    }
+  }
+  while self:checkKeyword("elseif") do
+    self:consume(1) -- Consume the "elseif" token
+    local elseifCondition = self:consumeExpression()
+    self:consume(1) -- Consume the last token of the elseif condition
+    self:expectKeyword("then")
+    local elseifCodeBlock = self:parseCodeBlock()
+    local ifBranch = { TYPE = "IfBranch",
+      Condition = elseifCondition,
+      CodeBlock = elseifCodeBlock
+    }
+    table.insert(branches, ifBranch)
+  end
+  local elseCodeBlock
+  if self:checkKeyword("else") then
+    self:consume(1) -- Consume the "else" token
+    elseCodeBlock = self:parseCodeBlock()
+  end
+  self:expectKeyword("end", true)
+  return { TYPE = "IfStatement",
+    Branches = branches,
+    ElseCodeBlock = elseCodeBlock
+  }
+end
+
+function ParserMethods:parseFor()
+  self:consume(1) -- Consume the "for" token
+  local variableName = self:expectTokenType("Identifier", true).Value
+  self:consume(1) -- Consume the variable name
+  if self:checkCharacter(",") or self:checkKeyword("in") then
+    local iteratorVariables = { variableName }
+    while self:checkCharacter(",") do
+      self:consume(1) -- Consume the comma
+      local newVariableName = self:expectTokenType("Identifier", true).Value
+      table.insert(iteratorVariables, newVariableName)
+      self:consume(1) -- Consume the variable name
     end
-    error("Expected an lvalue, got: " .. lvalueType)
+    self:expectKeyword("in")
+    local expressions = self:consumeExpressions()
+    self:adjustMultiretNodes(expressions, 3)
+    self:consume(1) -- Consume the last token of the expressions
+    self:expectKeyword("do")
+    local codeblock = self:parseCodeBlock(false, iteratorVariables)
+    self:expectKeyword("end", true)
+    return { TYPE = "GenericForLoop",
+      IteratorVariables = iteratorVariables,
+      Expressions = expressions,
+      CodeBlock = codeblock
+    }
+  end
+  self:expectCharacter("=")
+  local expressions = self:consumeExpressions()
+  self:consume(1) -- Consume the last token of the expressions
+  self:expectKeyword("do")
+  local codeblock = self:parseCodeBlock(false, { variableName })
+  self:expectKeyword("end", true)
+  return { TYPE = "NumericForLoop",
+    VariableName = variableName,
+    Expressions = expressions,
+    CodeBlock = codeblock
+  }
+end
+
+function ParserMethods:parseFunction()
+  -- fuction <variable>[.<field>]:<method>(...)
+  --   <codeblock>
+  -- end
+
+  self:consume(1) -- Consume the "function" token
+  local variableName = self:expectTokenType("Identifier", true).Value
+  local variableType = self:getVariableType(variableName)
+  local expression = { TYPE = "Variable", Value = variableName, VariableType = variableType }
+  local fields, isMethod = { }, false
+  while self:consume(1) do
+    if self:checkCharacter(".") then
+      self:consume(1) -- Consume the "."
+      local fieldName = self:expectTokenType("Identifier", true).Value
+      table.insert(fields, fieldName)
+    elseif self:checkCharacter(":") then
+      self:consume(1) -- Consume the ":"
+      local methodName = self:expectTokenType("Identifier", true).Value
+      table.insert(fields, methodName)
+      isMethod = true
+      self:consume(1) -- Consume the method name
+      break
+    else break end
+  end
+  local parameters, isVarArg = self:consumeParameterList()
+  if isMethod then
+    table.insert(parameters, 1, "self")
+  end
+  local codeblock = self:parseCodeBlock(true, parameters)
+  self:expectKeyword("end", true)
+  return { TYPE = "FunctionDeclaration",
+    Expression = expression,
+    Fields = fields,
+    IsMethod = isMethod,
+    CodeBlock = codeblock,
+    Parameters = parameters,
+    IsVarArg = isVarArg
+  }
+end
+
+function ParserMethods:parseAssignment(lvalue)
+  local lvalues = { lvalue }
+  self:consume(1) -- Consume the last token of the lvalue
+  while self:isComma(self.currentToken) do
+    self:consume(1) -- Consume the comma
+    local nextLValue = self:parsePrefixExpression()
+    if not nextLValue then error("Expected an lvalue") end
+    if not self:isValidAssignmentLvalue(nextLValue) then
+      error("Expected a variable or index, got: " .. nextLValue.TYPE)
+    end
+    table.insert(lvalues, nextLValue)
+    self:consume(1) -- Consume the last token of the lvalue
+  end
+  self:expectCharacter("=")
+  local expressions = self:consumeExpressions()
+  self:adjustMultiretNodes(expressions, #lvalues)
+  return { TYPE = "VariableAssignment",
+    LValues = lvalues,
+    Expressions = expressions
+  }
+end
+
+function ParserMethods:parseFunctionCallOrVariableAssignment()
+  local lvalue = self:parsePrefixExpression()
+  local lvalueType = tostring(lvalue and lvalue.TYPE)
+  if lvalue then
+    if self:isValidAssignmentLvalue(lvalue) then
+      return self:parseAssignment(lvalue)
+    elseif lvalueType == "FunctionCall" then
+      lvalue.ReturnValueAmount = 0
+      return lvalue
+    end
+    error("Unexpected lvalue type: " .. lvalueType)
+  end
+  error("Expected an lvalue, got: " .. lvalueType)
+end
+
+--// CODE BLOCK PARSERS //--
+function ParserMethods:getNextNode()
+  local currentTokenValue = self.currentToken.Value
+  local currentTokenType  = self.currentToken.TYPE
+  local node
+
+  if currentTokenType == "Keyword" then
+    if PARSER_STOP_KEYWORDS[currentTokenValue] then return
+    elseif currentTokenValue == "local"        then node = self:parseLocal()
+    elseif currentTokenValue == "while"        then node = self:parseWhile()
+    elseif currentTokenValue == "repeat"       then node = self:parseRepeat()
+    elseif currentTokenValue == "do"           then node = self:parseDo()
+    elseif currentTokenValue == "return"       then node = self:parseReturn()
+    elseif currentTokenValue == "break"        then node = self:parseBreak()
+    elseif currentTokenValue == "if"           then node = self:parseIf()
+    elseif currentTokenValue == "for"          then node = self:parseFor()
+    elseif currentTokenValue == "function"     then node = self:parseFunction()
+    else error("Unsupported keyword: " .. currentTokenValue) end
+  else
+    node = self:parseFunctionCallOrVariableAssignment()
+  end
+  self:consumeOptionalSemilcolon()
+
+  return node
+end
+
+function ParserMethods:parseCodeBlock(isFunctionScope, codeBlockVariables)
+  self:enterScope(isFunctionScope)
+  if codeBlockVariables then
+    self:declareLocalVariables(codeBlockVariables)
   end
 
-  --// CODE BLOCK PARSERS //--
-  function getNextNode()
-    local currentTokenValue = currentToken.Value
-    local currentTokenType  = currentToken.TYPE
-    local node
-    if currentTokenType == "Keyword" then
-      if PARSER_STOP_KEYWORDS[currentTokenValue] then return
-      elseif currentTokenValue == "local"        then node = parseLocal()
-      elseif currentTokenValue == "while"        then node = parseWhile()
-      elseif currentTokenValue == "repeat"       then node = parseRepeat()
-      elseif currentTokenValue == "do"           then node = parseDo()
-      elseif currentTokenValue == "return"       then node = parseReturn()
-      elseif currentTokenValue == "break"        then node = parseBreak()
-      elseif currentTokenValue == "if"           then node = parseIf()
-      elseif currentTokenValue == "for"          then node = parseFor()
-      elseif currentTokenValue == "function"     then node = parseFunction()
-      else error("Unsupported keyword: " .. currentTokenValue) end
-    else
-      node = parseFunctionCallOrVariableAssignment()
-    end
-
-    consumeOptionalSemilcolon()
-    return node
-  end
-  function parseCodeBlock(isFunctionScope, variablesInCodeBlock)
-    enterScope(isFunctionScope)
-    if variablesInCodeBlock then
-      declareLocalVariables(variablesInCodeBlock)
-    end
-    local nodeList = { TYPE = "Group" }
-    while currentToken do
-      local node = getNextNode()
-      if not node then break end
-      table.insert(nodeList, node)
-      consume()
-    end
-    exitScope()
-    return nodeList
+  local nodeList = { TYPE = "Group" }
+  while self.currentToken do
+    local node = self:getNextNode()
+    if not node then break end
+    table.insert(nodeList, node)
+    self:consume(1)
   end
 
-  --// MAIN //--
-  local function parse()
-    local ast = parseCodeBlock()
-    ast.TYPE = "AST"
-    return ast
-  end
+  self:exitScope()
+  return nodeList
+end
 
-  return parse()
+--// MAIN //--
+function ParserMethods:parse()
+  local ast = self:parseCodeBlock()
+  ast.TYPE = "AST"
+
+  return ast
+end
+
+--* Parser *--
+local Parser = {}
+function Parser.new(tokens)
+  local ParserInstance = {}
+
+  --// Initialization //--
+  ParserInstance.tokens = tokens
+  ParserInstance.currentTokenIndex = 1
+  ParserInstance.currentToken = tokens[1]
+  ParserInstance.scopeStack = {}
+  ParserInstance.currentScope = nil
+
+  --// Method Binding //--
+  insertValues(ParserInstance, ParserMethods)
+
+  return ParserInstance
 end
 
 --[[
     ============================================================================
                                      (•_•)?
-                          INSTRUCTION GENERATOR CONSTANTS
+                              CODE GENERATOR CONSTANTS
     ============================================================================
 
     Before diving into the compiler's implementation, let's explore the essential
@@ -1234,19 +1461,19 @@ local COMPILER_CONTROL_FLOW_OPERATOR_LOOKUP = createLookupTable({"and", "or"})
 --[[
     ============================================================================
                                  (づ｡◕‿‿◕｡)づ
-                         THE INSTRUCTION GENERATOR!!!
+                            THE CODE GENERATOR!!!
     ============================================================================
 
-    Possibly the most complex part of the compiler, the Instruction Generator is
+    Possibly the most complex part of the compiler, the Code Generator is
     responsible for converting the AST into Lua instructions, which are
     similar to assembly instructions, but they are much higher level,
     because they're being executed in the Lua VM (Virtual Machine),
-    not on a physical CPU. The Instruction Generator will also be responsible
+    not on a physical CPU. The Code Generator will also be responsible
     for generating the function prototypes, which are used to store
     information about the function, such as the number of arguments,
     the number of local variables, and the number of upvalues.
 
-    Here's an example of how the Instruction Generator converts a simple AST
+    Here's an example of how the Code Generator converts a simple AST
     into Lua instructions:
     ```lua
  
@@ -1254,718 +1481,791 @@ local COMPILER_CONTROL_FLOW_OPERATOR_LOOKUP = createLookupTable({"and", "or"})
     The resulting proto would look like this:
 
 --]]
-local InstructionGenerator = {}
-function InstructionGenerator.generate(ast)
-  local breakInstructions
-  local locals, currentScope
-  local scopes = {}
-  local currentProto
-  local takenRegisters, code, constants,
-        constantLookup, upvalues, upvalueLookup,
-        protos
 
-  --// PROTO MANAGEMENT //--
-  local function setProto(proto)
-    currentProto   = proto
-    takenRegisters = proto.takenRegisters
-    code           = proto.code
-    constants      = proto.constants
-    constantLookup = proto.constantLookup
-    upvalues       = proto.upvalues
-    upvalueLookup  = proto.upvalueLookup
-    protos         = proto.protos
-  end
-  local function newProto()
-    currentProto = {
-      takenRegisters = {},
-      code           = {},
-      constants      = {},
-      constantLookup = {},
-      upvalues       = {},
-      upvalueLookup  = {},
-      protos         = {},
-      numParams      = 0,
-      isVarArg       = false,
-      functionName   = "@tlc",
-    }
-    setProto(currentProto)
-    return currentProto
-  end
+--* CodeGeneratorMethods *--
+local CodeGeneratorMethods = {}
 
-  --// REGISTER MANAGEMENT //--
-  local function allocateRegister()
-    local newRegister = (takenRegisters[0] and #takenRegisters + 1) or 0
-    if newRegister > 255 then
-      error("Out of registers")
-    end
-    takenRegisters[newRegister] = true
-    return newRegister
-  end
-  local function deallocateRegister(register)
-    takenRegisters[register] = nil
-  end
-  local function deallocateRegisters(registers)
-    for _, register in ipairs(registers) do
-      takenRegisters[register] = nil
-    end
-  end
-
-  --// VARIABLE MANAGEMENT //--
-  local function getVariableType(variableName)
-    local scope = currentScope
-    local isUpvalue = false
-    while scope do
-      if scope.locals[variableName] then
-        return (isUpvalue and "Upvalue") or "Local"
-      elseif scope.isFunctionScope then
-        isUpvalue = true
-      end
-      scope = scope.previousScope
-    end
-    return "Global"
-  end
-  local function findVariableRegister(localName)
-    local scope = currentScope
-    while scope do
-      local variableRegister = scope.locals[localName]
-      if variableRegister then
-        return variableRegister
-      elseif scope.isFunctionScope then
-        break
-      end
-      local previousScope = scope.previousScope
-      scope = previousScope
-    end
-    error("Could not find variable: " .. localName)
-  end
-  local function registerVariable(localName, register)
-    locals[localName] = register
-  end
-  local function unregisterVariable(localName)
-    deallocateRegister(locals[localName])
-    locals[localName] = nil
-  end
-  local function unregisterVariables(variables)
-    for _, variable in ipairs(variables) do
-      unregisterVariable(variable)
-    end
-  end
-
-  --// SCOPE MANAGEMENT //--
-  local function enterScope(isFunctionScope)
-    local newScope = {
-      locals = {},
-      isFunctionScope = isFunctionScope,
-      previousScope = scopes[#scopes]
-    }
-    locals = newScope.locals
-    table.insert(scopes, newScope)
-    currentScope = newScope
-    return newScope
-  end
-  local function exitScope()
-    table.remove(scopes)
-    for variableName in pairs(currentScope.locals) do
-      unregisterVariable(variableName)
-    end
-    if #scopes > 0 then
-      currentScope = scopes[#scopes]
-      locals = currentScope.locals
-    end
-  end
-
-  --// UTILITY FUNCTIONS //--
-  local function isMultiretNode(node)
-    if not node then return false end
-    return PARSER_MULTIRET_NODE_TYPES[node.TYPE]
-  end
-  local function updateJumpInstruction(instructionIndex)
-    local currentInstructionIndex = #code
-    local jumpDistance = currentInstructionIndex - instructionIndex
-    local instruction = code[instructionIndex]
-    instruction[3] = jumpDistance
-  end
-  local function updateJumpInstructions(list)
-    for _, instructionIndex in ipairs(list) do
-      updateJumpInstruction(instructionIndex)
-    end
-  end
-  local function findOrCreateConstant(value)
-    if constantLookup[value] then
-      return constantLookup[value]
-    end
-    table.insert(constants, value)
-    local constantIndex = -(#constants)
-    constantLookup[value] = constantIndex
-    return constantIndex
-  end
-  local function findOrCreateUpvalue(value)
-    if upvalueLookup[value] then
-      return upvalueLookup[value]
-    end
-    table.insert(upvalues, value)
-    local upvalueIndex = #upvalues - 1
-    upvalueLookup[value] = upvalueIndex
-    return upvalueIndex
-  end
-  local function addInstruction(opname, a, b, c)
-    local instruction = { opname, a, b, c }
-    table.insert(code, instruction)
-    return #code
-  end
-
-  local processExpressionNode, processExpressionNodes, processStatementNode,
-        processCodeBlock, processFunctionCodeBlock, processFunction
-
-  --// EXPRESSION COMPILERS //--
-  local function compileNumberNode(node, expressionRegister)
-    local constantIndex = findOrCreateConstant(node.Value)
-    -- OP_LOADK [A, Bx]    R(A) := Kst(Bx)
-    addInstruction("LOADK", expressionRegister, constantIndex)
-    return expressionRegister
-  end
-  local function compileStringNode(node, expressionRegister)
-    local constantIndex = findOrCreateConstant(node.Value)
-    -- OP_LOADK [A, Bx]    R(A) := Kst(Bx)
-    addInstruction("LOADK", expressionRegister, constantIndex)
-    return expressionRegister
-  end
-  local function compileFunctionNode(node, expressionRegister)
-    processFunction(node, expressionRegister)
-    return expressionRegister
-  end
-  local function compileFunctionCallNode(node, expressionRegister)
-    local selfArgumentRegister
-    if node.WithSelf then
-      local nodeExpressionIndex      = node.Expression.Index
-      local nodeExpressionExpression = node.Expression.Expression
-      processExpressionNode(nodeExpressionExpression, expressionRegister)
-      selfArgumentRegister = allocateRegister()
-      local nodeIndexRegister = processExpressionNode(nodeExpressionIndex)
-      -- OP_SELF [A, B, C]    R(A+1) := R(B) R(A) := R(B)[RK(C)]
-      addInstruction("SELF", expressionRegister, expressionRegister, nodeIndexRegister)
-      deallocateRegister(nodeIndexRegister)
-    else
-      processExpressionNode(node.Expression, expressionRegister)
-    end
-    local argumentRegisters = processExpressionNodes(node.Arguments)
-    if selfArgumentRegister then
-      table.insert(argumentRegisters, 1, selfArgumentRegister)
-    end
-    local returnAmount   = math.max(0, node.ReturnValueAmount + 1)
-    local argumentAmount = #argumentRegisters + 1
-    if isMultiretNode(node.Arguments[#node.Arguments]) then
-      argumentAmount = 0
-    end
-    -- OP_CALL [A, B, C]    R(A), ... ,R(A+C-2) := R(A)(R(A+1), ... ,R(A+B-1))
-    addInstruction("CALL", expressionRegister, argumentAmount, returnAmount)
-    deallocateRegisters(argumentRegisters)
-    local returnRegisters = { expressionRegister }
-    for _ = expressionRegister + 1, expressionRegister + node.ReturnValueAmount - 1 do
-      table.insert(returnRegisters, allocateRegister())
-    end
-    return unpack(returnRegisters)
-  end
-  local function compileConstantNode(node, expressionRegister)
-    local nodeValue = node.Value
-    if nodeValue ~= "nil" then
-      local secondValue = (nodeValue == "true" and 1) or 0
-      -- OP_LOADBOOL [A, B, C]    R(A) := (Bool)B if (C) pc++
-      addInstruction("LOADBOOL", expressionRegister, secondValue, 0)
-    else
-      -- OP_LOADNIL [A, B]    R(A) := ... := R(B) := nil
-      addInstruction("LOADNIL", expressionRegister, expressionRegister)
-    end
-    return expressionRegister
-  end
-  local function compileVarArgNode(node, expressionRegister)
-    local returnAmount = node.ReturnValueAmount + 1
-    if returnAmount <= 0 then returnAmount = 0 end
-    -- OP_VARARG [A, B]    R(A), R(A+1), ..., R(A+B-1) = vararg
-    addInstruction("VARARG", expressionRegister, returnAmount)
-    local returnRegisters = { expressionRegister }
-    for _ = expressionRegister + 1, expressionRegister + node.ReturnValueAmount - 1 do
-      table.insert(returnRegisters, allocateRegister())
-    end
-    return unpack(returnRegisters)
-  end
-  local function compileTableIndexNode(node, expressionRegister)
-    processExpressionNode(node.Expression, expressionRegister)
-    local indexRegister = processExpressionNode(node.Index)
-    -- OP_GETTABLE [A, B, C]    R(A) := R(B)[RK(C)]
-    addInstruction("GETTABLE", expressionRegister, expressionRegister, indexRegister)
-    deallocateRegister(indexRegister)
-    return expressionRegister
-  end
-  local function compileTableNode(node, expressionRegister)
-    local implicitElements = node.ImplicitElements
-    local explicitElements = node.ExplicitElements
-    local sizeB = math.min(#implicitElements, 255)
-    local sizeC = math.min(#explicitElements, 255)
-    -- OP_NEWTABLE [A, B, C]    R(A) := {} (size = B,C)
-    addInstruction("NEWTABLE", expressionRegister, sizeB, sizeC)
-    for _, element in ipairs(explicitElements) do
-      local valueRegister = processExpressionNode(element.Value)
-      local keyRegister   = processExpressionNode(element.Key)
-      deallocateRegisters({ valueRegister, keyRegister })
-      -- OP_SETTABLE [A, B, C]    R(A)[RK(B)] := RK(C)
-      addInstruction("SETTABLE", expressionRegister, keyRegister, valueRegister)
-    end
-
-    local pages = math.ceil(#implicitElements / COMPILER_SETLIST_MAX)
-    for page = 1, pages do
-      local startIndex = (page - 1) * COMPILER_SETLIST_MAX + 1
-      local endIndex   = math.min(page * COMPILER_SETLIST_MAX, #implicitElements)
-
-      local currentPageRegisters = {}
-      for elementIndex = startIndex, endIndex do
-        local element       = implicitElements[elementIndex]
-        local elementValue  = element.Value
-        local valueRegister = processExpressionNode(elementValue)
-
-        table.insert(currentPageRegisters, valueRegister)
-      end
-
-      local lastElement               = implicitElements[endIndex]
-      local lastElementValue          = lastElement.Value.Value
-      local currentPageRegisterAmount = #currentPageRegisters
-      if page == pages and isMultiretNode(lastElementValue) then
-         -- B = 0: Doesn't have a fixed amount of keys (multiret)
-         currentPageRegisterAmount = 0
-      end
-
-      -- OP_SETLIST [A, B, C]    R(A)[(C-1)*FPF+i] := R(A+i), 1 <= i <= B
-      addInstruction("SETLIST", expressionRegister, currentPageRegisterAmount, page)
-      deallocateRegisters(currentPageRegisters)
-    end
-
-    return expressionRegister
-  end
-  local function compileVariableNode(node, expressionRegister)
-    local variableType = node.VariableType
-    if variableType == "Global" then
-      -- OP_GETGLOBAL [A, Bx]    R(A) := Gbl[Kst(Bx)]
-      addInstruction("GETGLOBAL", expressionRegister, findOrCreateConstant(node.Value))
-    elseif variableType == "Local" then
-      local variableRegister = findVariableRegister(node.Value)
-      -- OP_MOVE [A, B]    R(A) := R(B)
-      addInstruction("MOVE", expressionRegister, variableRegister)
-    elseif variableType == "Upvalue" then
-      -- OP_GETUPVAL [A, B]    R(A) := UpValue[B]
-      addInstruction("GETUPVAL", expressionRegister, findOrCreateUpvalue(node.Value))
-    end
-    return expressionRegister
-  end
-  local function compileBinaryOperatorNode(node, expressionRegister)
-    local nodeOperator = node.Operator
-    if COMPILER_SIMPLE_ARICHMETIC_OPERATOR_LOOKUP[nodeOperator] then
-      local opcode = COMPILER_SIMPLE_ARICHMETIC_OPERATOR_LOOKUP[nodeOperator]
-      local leftExpressionRegister = processExpressionNode(node.Left)
-      local rightExpressionRegister = processExpressionNode(node.Right)
-      addInstruction(opcode, expressionRegister, leftExpressionRegister, rightExpressionRegister)
-      deallocateRegisters({ leftExpressionRegister, rightExpressionRegister })
-    elseif COMPILER_CONTROL_FLOW_OPERATOR_LOOKUP[nodeOperator] then
-      local leftExpressionRegister = processExpressionNode(node.Left, expressionRegister)
-      local isConditionTrue = (nodeOperator == "and" and 0) or 1
-      -- OP_TEST [A, C]    if not (R(A) <=> C) then pc++
-      addInstruction("TEST", leftExpressionRegister, 0, isConditionTrue)
-      -- OP_JMP [A, sBx]    pc+=sBx
-      local jumpInstructionIndex = addInstruction("JMP", 0, 0)
-      processExpressionNode(node.Right, expressionRegister)
-      updateJumpInstruction(jumpInstructionIndex)
-    elseif COMPILER_COMPARISON_OPERATOR_LOOKUP[nodeOperator] then
-      local leftExpressionRegister = processExpressionNode(node.Left)
-      local rightExpressionRegister = processExpressionNode(node.Right)
-      local instruction, flag = unpack(COMPILER_COMPARISON_INSTRUCTION_LOOKUP[nodeOperator])
-      if nodeOperator == ">" or nodeOperator == ">=" then
-        leftExpressionRegister, rightExpressionRegister = rightExpressionRegister, leftExpressionRegister
-      end
-      addInstruction(instruction, flag, leftExpressionRegister, rightExpressionRegister)
-      -- OP_JMP [A, sBx]    pc+=sBx
-      addInstruction("JMP", 0, 1)
-      -- OP_LOADBOOL [A, B, C]    R(A) := (Bool)B if (C) pc++
-      addInstruction("LOADBOOL", expressionRegister, 0, 1)
-      addInstruction("LOADBOOL", expressionRegister, 1, 0)
-      deallocateRegisters({ leftExpressionRegister, rightExpressionRegister })
-    elseif nodeOperator == ".." then
-      local leftExpressionRegister = processExpressionNode(node.Left)
-      local rightExpressionRegister = processExpressionNode(node.Right)
-      if (rightExpressionRegister - leftExpressionRegister) ~= 1 then
-        error("Concatenation requires consecutive registers")
-      end
-      -- OP_CONCAT [A, B, C]    R(A) := R(B).. ... ..R(C)
-      addInstruction("CONCAT", expressionRegister, leftExpressionRegister, rightExpressionRegister)
-      deallocateRegisters({ leftExpressionRegister, rightExpressionRegister })
-    end
-    return expressionRegister
-  end
-  local function compileUnaryOperatorNode(node, expressionRegister)
-    local nodeOperator      = node.Operator
-    local operatorOpcode    = COMPILER_UNARY_OPERATOR_LOOKUP[nodeOperator]
-    local operandExpression = processExpressionNode(node.Operand)
-    addInstruction(operatorOpcode, expressionRegister, operandExpression)
-    deallocateRegister(operandExpression)
-    return expressionRegister
-  end
-
-  --// STATEMENT COMPILERS //--
-  local function compileBreakStatementNode()
-    -- OP_JMP [A, sBx]    pc+=sBx
-    local jumpInstructionIndex = addInstruction("JMP", 0, 0)
-    table.insert(breakInstructions, jumpInstructionIndex)
-  end
-  local function compileLocalFunctionDeclarationNode(node)
-    local name          = node.Name
-    local localRegister = allocateRegister()
-    registerVariable(name, localRegister)
-    processFunction(node, localRegister, name)
-  end
-  local function compileFunctionDeclarationNode(node)
-    local expression = node.Expression
-    local fields     = node.Fields
-    if #fields > 0 then
-      local closureRegister = allocateRegister()
-      local lastField = fields[#fields]
-      processFunction(node, closureRegister, lastField)
-      local expressionRegister = processExpressionNode(expression)
-      for index, field in ipairs(fields) do
-        local fieldRegister = allocateRegister()
-        -- OP_LOADK [A, Bx]    R(A) := Kst(Bx)
-        addInstruction("LOADK", fieldRegister, findOrCreateConstant(field))
-        if index == #fields then
-          -- OP_SETTABLE [A, B, C]    R(A)[RK(B)] := RK(C)
-          addInstruction("SETTABLE", expressionRegister, fieldRegister, closureRegister)
-        else
-          -- OP_GETTABLE [A, B, C]    R(A) := R(B)[RK(C)]
-          addInstruction("GETTABLE", expressionRegister, expressionRegister, fieldRegister)
-        end
-        deallocateRegister(fieldRegister)
-      end
-      deallocateRegisters({ expressionRegister, closureRegister })
-      return
-    end
-    local variableName = expression.Value
-    if expression.VariableType == "Local" then
-      local localRegister = findVariableRegister(variableName)
-      processFunction(node, localRegister, variableName)
-    elseif expression.VariableType == "Upvalue" then
-      local closureRegister = allocateRegister()
-      processFunction(node, closureRegister, variableName)
-      -- OP_SETUPVAL [A, B]    UpValue[B] := R(A)
-      addInstruction("SETUPVAL", closureRegister, findOrCreateUpvalue(variableName))
-      deallocateRegister(closureRegister)
-    elseif expression.VariableType == "Global" then
-      local globalRegister = allocateRegister()
-      processFunction(node, globalRegister, variableName)
-      -- OP_SETGLOBAL [A, Bx]    Gbl[Kst(Bx)] := R(A)
-      addInstruction("SETGLOBAL", globalRegister, findOrCreateConstant(variableName))
-      deallocateRegister(globalRegister)
-    end
-  end
-  local function compileLocalDeclarationNode(node)
-    local variableExpressionRegisters = {}
-    for index, expression in ipairs(node.Expressions) do
-      local expressionRegisters = { processExpressionNode(expression) }
-      for index2, expressionRegister in ipairs(expressionRegisters) do
-        table.insert(variableExpressionRegisters, expressionRegister)
-        if not node.Variables[index + index2 - 1] then
-          -- If this expression doesn't have a corresponding variable, deallocate it
-          deallocateRegister(expressionRegister)
-        end
-      end
-    end
-    for index, localName in ipairs(node.Variables) do
-      local expressionRegister = variableExpressionRegisters[index]
-      if not expressionRegister then
-        expressionRegister = allocateRegister()
-        -- Load nil into the register
-        -- OP_LOADNIL [A, B]    R(A) := ... := R(B) := nil
-        addInstruction("LOADNIL", expressionRegister, expressionRegister)
-      end
-      registerVariable(localName, expressionRegister)
-    end
-  end
-  local function compileNumericForLoopNode(node)
-    local variableName  = node.VariableName
-    local expressions   = node.Expressions
-    local codeblock     = node.CodeBlock
-    local startRegister = processExpressionNode(expressions[1])
-    local endRegister   = processExpressionNode(expressions[2])
-    local stepRegister  = allocateRegister()
-    if expressions[3] then
-      stepRegister = processExpressionNode(expressions[3], stepRegister)
-    else
-      -- OP_LOADK [A, Bx]    R(A) := Kst(Bx)
-      addInstruction("LOADK", stepRegister, findOrCreateConstant(1))
-    end
-    -- OP_FORPREP [A, sBx]    R(A)-=R(A+2) pc+=sBx
-    local forprepInstructionIndex = addInstruction("FORPREP", startRegister, 0)
-    local loopStart = #code
-    registerVariable(variableName, startRegister)
-    local oldBreakInstructions = breakInstructions
-    breakInstructions = {}
-    processCodeBlock(codeblock)
-    local loopEnd = #code
-    updateJumpInstruction(forprepInstructionIndex)
-    -- OP_FORLOOP [,A sBx]   R(A)+=R(A+2)
-    --                       if R(A) <?= R(A+1) then { pc+=sBx R(A+3)=R(A) }
-    addInstruction("FORLOOP", startRegister, loopStart - loopEnd - 1)
-    updateJumpInstructions(breakInstructions)
-    breakInstructions = oldBreakInstructions
-    unregisterVariable(variableName)
-    deallocateRegisters({ startRegister, endRegister, stepRegister })
-  end
-  local function compileGenericForLoopNode(node)
-    local iteratorVariables   = node.IteratorVariables
-    local expressions         = node.Expressions
-    local codeblock           = node.CodeBlock
-    local expressionRegisters = processExpressionNodes(expressions)
-    -- OP_JMP [A, sBx]    pc+=sBx
-    local startJmpInstructionIndex = addInstruction("JMP", 0, 0)
-    local forGeneratorRegister = expressionRegisters[1]
-    local forStateRegister     = expressionRegisters[2]
-    local forControlRegister   = expressionRegisters[3]
-    if not (forGeneratorRegister and forStateRegister and forControlRegister) then
-      error("Expected 3 expression registers")
-    end
-    local loopStart = #code
-    for _, iteratorVariable in ipairs(iteratorVariables) do
-      local iteratorRegister = allocateRegister()
-      registerVariable(iteratorVariable, iteratorRegister)
-    end
-    local oldBreakInstructions = breakInstructions
-    breakInstructions = {}
-    processCodeBlock(codeblock)
-    updateJumpInstruction(startJmpInstructionIndex)
-    -- OP_TFORLOOP [A, C]    R(A+3), ... ,R(A+2+C) := R(A)(R(A+1), R(A+2))
-    --                       if R(A+3) ~= nil then R(A+2)=R(A+3) else pc++
-    addInstruction("TFORLOOP", forGeneratorRegister, 0, #iteratorVariables)
-    -- OP_JMP [A, sBx]    pc+=sBx
-    addInstruction("JMP", 0, loopStart - #code - 1)
-    updateJumpInstructions(breakInstructions)
-    breakInstructions = oldBreakInstructions
-    deallocateRegisters(expressionRegisters)
-    unregisterVariables(iteratorVariables)
-  end
-  local function compileReturnStatementNode(node)
-    local expressionRegisters = processExpressionNodes(node.Expressions)
-    local startRegister       = expressionRegisters[1] or 0
-    local returnAmount        = #node.Expressions + 1
-    local lastExpression      = node.Expressions[#node.Expressions]
-    if isMultiretNode(lastExpression) then
-      returnAmount = 0
-    end
-    -- OP_RETURN [A, B]    return R(A), ... ,R(A+B-2)
-    addInstruction("RETURN", startRegister, returnAmount, 0)
-    deallocateRegisters(expressionRegisters)
-  end
-  local function compileWhileLoopNode(node)
-    local loopStart         = #code
-    local conditionRegister = processExpressionNode(node.Condition)
-    -- OP_TEST [A, C]    if not (R(A) <=> C) then pc++
-    addInstruction("TEST", conditionRegister, 0, 0)
-    -- OP_JMP [A, sBx]    pc+=sBx
-    local jumpInstructionIndex = addInstruction("JMP", 0, 0)
-    deallocateRegister(conditionRegister)
-    local oldBreakInstructions = breakInstructions
-    breakInstructions = {}
-    processCodeBlock(node.CodeBlock)
-    -- OP_JMP [A, sBx]    pc+=sBx
-    addInstruction("JMP", 0, loopStart - #code - 1)
-    updateJumpInstruction(jumpInstructionIndex)
-    updateJumpInstructions(breakInstructions)
-    breakInstructions = oldBreakInstructions
-  end
-  local function compileRepeatLoopNode(node)
-    local loopStart = #code
-    processCodeBlock(node.CodeBlock)
-    local conditionRegister = processExpressionNode(node.Condition)
-    -- OP_TEST [A, C]    if not (R(A) <=> C) then pc++
-    addInstruction("TEST", conditionRegister, 0, 0)
-    -- OP_JMP [A, sBx]    pc+=sBx
-    addInstruction("JMP", 0, loopStart - #code - 1)
-    deallocateRegister(conditionRegister)
-  end
-  local function compileDoBlockNode(node)
-    processCodeBlock(node.CodeBlock)
-  end
-  local function compileIfStatementNode(node)
-    local branches      = node.Branches
-    local elseCodeBlock = node.ElseCodeBlock
-    local jumpToEndInstructions = {}
-    for index, branch in ipairs(branches) do
-      local condition = branch.Condition
-      local codeBlock = branch.CodeBlock
-      local conditionRegister = processExpressionNode(condition)
-      -- OP_TEST [A, C]    if not (R(A) <=> C) then pc++
-      addInstruction("TEST", conditionRegister, 0, 0)
-      -- OP_JMP [A, sBx]    pc+=sBx
-      local conditionJumpInstructionIndex = addInstruction("JMP", 0, 0)
-      deallocateRegister(conditionRegister)
-      processCodeBlock(codeBlock)
-      if index < #branches or elseCodeBlock then
-        -- OP_JMP [A, sBx]    pc+=sBx
-        local jumpInstructionIndex = addInstruction("JMP", 0, 0)
-        table.insert(jumpToEndInstructions, jumpInstructionIndex)
-      end
-      updateJumpInstruction(conditionJumpInstructionIndex)
-    end
-    if elseCodeBlock then
-      processCodeBlock(elseCodeBlock)
-    end
-
-    updateJumpInstructions(jumpToEndInstructions)
-  end
-  local function compileVariableAssignmentNode(node)
-    local expressionRegisters = processExpressionNodes(node.Expressions)
-    for index, lvalue in ipairs(node.LValues) do
-      local lvalueType = lvalue.TYPE
-      if lvalueType == "Variable" then
-        local variableType = lvalue.VariableType
-        local variableName = lvalue.Value
-        local expressionRegister = expressionRegisters[index]
-        if not expressionRegister then error("Expected an expression for assignment") end
-        if variableType == "Local" then
-          local variableRegister = findVariableRegister(variableName)
-          -- OP_MOVE [A, B]    R(A) := R(B)
-          addInstruction("MOVE", variableRegister, expressionRegister)
-        elseif variableType == "Global" then
-          -- OP_SETGLOBAL [A, Bx]    Gbl[Kst(Bx)] := R(A)
-          addInstruction("SETGLOBAL", expressionRegister, findOrCreateConstant(variableName))
-        elseif variableType == "Upvalue" then
-          -- OP_SETUPVAL [A, B]    UpValue[B] := R(A)
-          addInstruction("SETUPVAL", expressionRegister, findOrCreateUpvalue(variableName))
-        end
-      elseif lvalueType == "TableIndex" then
-        local indexRegister = processExpressionNode(lvalue.Index)
-        local tableExpressionRegister = processExpressionNode(lvalue.Expression)
-        local expressionRegister = expressionRegisters[index]
-        if not expressionRegister then error("Expected an expression for assignment") end
-        -- OP_SETTABLE [A, B, C]    R(A)[RK(B)] := RK(C)
-        addInstruction("SETTABLE", tableExpressionRegister, indexRegister, expressionRegister)
-        deallocateRegisters({ indexRegister, expressionRegister, tableExpressionRegister })
-      else
-        error("Unsupported lvalue type: " .. lvalueType)
-      end
-    end
-    deallocateRegisters(expressionRegisters)
-  end
-
-  --// CODE GENERATION //--
-  function processExpressionNode(node, expressionRegister)
-    expressionRegister = expressionRegister or allocateRegister()
-    local nodeType = node.TYPE
-    while nodeType == "Expression" do
-      node = node.Value
-      nodeType = node.TYPE
-    end
-
-    if     nodeType == "Number"         then return compileNumberNode(node, expressionRegister)
-    elseif nodeType == "String"         then return compileStringNode(node, expressionRegister)
-    elseif nodeType == "Function"       then return compileFunctionNode(node, expressionRegister)
-    elseif nodeType == "FunctionCall"   then return compileFunctionCallNode(node, expressionRegister)
-    elseif nodeType == "Constant"       then return compileConstantNode(node, expressionRegister)
-    elseif nodeType == "VarArg"         then return compileVarArgNode(node, expressionRegister)
-    elseif nodeType == "TableIndex"     then return compileTableIndexNode(node, expressionRegister)
-    elseif nodeType == "Table"          then return compileTableNode(node, expressionRegister)
-    elseif nodeType == "Variable"       then return compileVariableNode(node, expressionRegister)
-    elseif nodeType == "BinaryOperator" then return compileBinaryOperatorNode(node, expressionRegister)
-    elseif nodeType == "UnaryOperator"  then return compileUnaryOperatorNode(node, expressionRegister)
-    end
-
-    error("Unsupported expression node type: " .. tostring(nodeType))
-  end
-  function processStatementNode(node)
-    local nodeType = node.TYPE
-    if nodeType == "FunctionCall" then
-      return deallocateRegisters({ processExpressionNode(node) })
-    elseif nodeType == "BreakStatement"           then return compileBreakStatementNode()
-    elseif nodeType == "LocalFunctionDeclaration" then return compileLocalFunctionDeclarationNode(node)
-    elseif nodeType == "FunctionDeclaration"      then return compileFunctionDeclarationNode(node)
-    elseif nodeType == "LocalDeclaration"         then return compileLocalDeclarationNode(node)
-    elseif nodeType == "NumericForLoop"           then return compileNumericForLoopNode(node)
-    elseif nodeType == "GenericForLoop"           then return compileGenericForLoopNode(node)
-    elseif nodeType == "ReturnStatement"          then return compileReturnStatementNode(node)
-    elseif nodeType == "WhileLoop"                then return compileWhileLoopNode(node)
-    elseif nodeType == "RepeatLoop"               then return compileRepeatLoopNode(node)
-    elseif nodeType == "DoBlock"                  then return compileDoBlockNode(node)
-    elseif nodeType == "IfStatement"              then return compileIfStatementNode(node)
-    elseif nodeType == "VariableAssignment"       then return compileVariableAssignmentNode(node)
-    end
-
-    error("Unsupported statement node type: " .. tostring(nodeType))
-  end
-  function processExpressionNodes(list)
-    local registers = {}
-    for _, node in ipairs(list) do
-      local currentExpressionRegisters = { processExpressionNode(node) }
-      for _, register in ipairs(currentExpressionRegisters) do
-        table.insert(registers, register)
-      end
-    end
-    return registers
-  end
-  function processCodeBlock(list)
-    enterScope()
-    for _, node in ipairs(list) do
-      processStatementNode(node)
-    end
-    exitScope()
-  end
-  function processFunctionCodeBlock(list, parameters)
-    enterScope(true) -- Enter with function scope
-    for _, parameter in ipairs(parameters) do
-      registerVariable(parameter, allocateRegister())
-    end
-    for _, node in ipairs(list) do
-      processStatementNode(node)
-    end
-    exitScope()
-  end
-  function processFunction(node, expressionRegister, name)
-    local codeBlock    = node.CodeBlock
-    local parameters   = node.Parameters or {}
-    local isVarArg     = node.IsVarArg
-    local oldProto     = currentProto
-    local proto        = newProto()
-    proto.numParams    = #parameters
-    proto.isVarArg     = isVarArg
-    proto.functionName = (name and "@" .. name) or "@anonymous"
-
-    processFunctionCodeBlock(codeBlock, parameters)
-
-    -- OP_RETURN [A, B]    return R(A), ... ,R(A+B-2)
-    addInstruction("RETURN", 0, 1) -- Default return statement
-    setProto(oldProto)
-    table.insert(protos, proto)
-    -- R(A) := closure(KPROTO[Bx], R(A), ... ,R(A+n))
-    addInstruction("CLOSURE", expressionRegister, #protos - 1)
-
-    for _, upvalueName in ipairs(proto.upvalues) do
-      local upvalueType = getVariableType(upvalueName)
-      if upvalueType == "Local" then
-        -- OP_MOVE [A, B]    R(A) := R(B)
-        addInstruction("MOVE", 0, findVariableRegister(upvalueName))
-      elseif upvalueType == "Upvalue" then
-        -- OP_GETUPVAL [A, B]    R(A) := UpValue[B]
-        addInstruction("GETUPVAL", 0, findOrCreateUpvalue(upvalueName))
-      else error("Unsupported upvalue type: " .. upvalueType) end
-    end
-    return proto
-  end
-
-  --// MAIN //--
-  local function generate()
-    local proto = newProto()
-    proto.isVarArg = true
-    processCodeBlock(ast)
-    -- OP_RETURN [A, B]    return R(A), ... ,R(A+B-2)
-    addInstruction("RETURN", 0, 1) -- Default return statement
-    return proto
-  end
-
-  return generate()
+--// Prototype Management //--
+function CodeGeneratorMethods:setProto(proto)
+  self.currentProto   = proto
+  self.takenRegisters = proto.takenRegisters
+  self.code           = proto.code
+  self.constants      = proto.constants
+  self.constantLookup = proto.constantLookup
+  self.upvalues       = proto.upvalues
+  self.upvalueLookup  = proto.upvalueLookup
+  self.protos         = proto.protos
 end
+
+function CodeGeneratorMethods:newProto()
+  self.currentProto = {
+    takenRegisters = {},
+    code           = {},
+    constants      = {},
+    constantLookup = {},
+    upvalues       = {},
+    upvalueLookup  = {},
+    protos         = {},
+    numParams      = 0,
+    isVarArg       = false,
+    functionName   = "@tlc",
+  }
+  self:setProto(self.currentProto)
+  return self.currentProto
+end
+
+--// Register Management //--
+function CodeGeneratorMethods:allocateRegister()
+  local newRegister = (self.takenRegisters[0] and #self.takenRegisters + 1) or 0
+  if newRegister > 255 then
+    error("Out of registers")
+  end
+  self.takenRegisters[newRegister] = true
+  return newRegister
+end
+
+function CodeGeneratorMethods:deallocateRegister(register)
+  self.takenRegisters[register] = nil
+end
+
+function CodeGeneratorMethods:deallocateRegisters(registers)
+  for _, register in ipairs(registers) do
+    self:deallocateRegister(register)
+  end
+end
+
+--// Variable Management //--
+function CodeGeneratorMethods:getVariableType(variableName)
+  local scope = self.currentScope
+  local isUpvalue = false
+  while scope do
+    if scope.locals[variableName] then
+      return (isUpvalue and "Upvalue") or "Local"
+    elseif scope.isFunctionScope then
+      isUpvalue = true
+    end
+    scope = scope.previousScope
+  end
+  return "Global"
+end
+
+function CodeGeneratorMethods:findVariableRegister(localName)
+  local scope = self.currentScope
+  while scope do
+    local variableRegister = scope.locals[localName]
+    if variableRegister then
+      return variableRegister
+    elseif scope.isFunctionScope then
+      break
+    end
+    local previousScope = scope.previousScope
+    scope = previousScope
+  end
+  error("Could not find variable: " .. localName)
+end
+
+function CodeGeneratorMethods:registerVariable(localName, register)
+  self.locals[localName] = register
+end
+
+function CodeGeneratorMethods:unregisterVariable(variableName)
+  local locals = self.locals
+  local variableRegister = locals[variableName]
+  if not variableRegister then
+    error("Attempt to unregister undeclared variable: " .. variableName)
+  end
+
+  -- Unregister it
+  self:deallocateRegister(variableRegister)
+  locals[variableName] = nil
+end
+
+function CodeGeneratorMethods:unregisterVariables(variables)
+  for _, variableName in ipairs(variables) do
+    self:unregisterVariable(variableName)
+  end
+end
+
+--// Scope Management //--
+function CodeGeneratorMethods:enterScope(isFunctionScope)
+  local newScope = {
+    locals = {},
+    isFunctionScope = isFunctionScope,
+    previousScope = self.scopes[#self.scopes]
+  }
+  self.locals = newScope.locals
+  table.insert(self.scopes, newScope)
+  self.currentScope = newScope
+  return newScope
+end
+
+function CodeGeneratorMethods:exitScope()
+  table.remove(self.scopes)
+  for variableName in pairs(self.currentScope.locals) do
+    self:unregisterVariable(variableName)
+  end
+
+  if #self.scopes > 0 then
+    self.currentScope = self.scopes[#self.scopes]
+    self.locals = self.currentScope.locals
+  end
+end
+
+--// Utility Functions //--
+function CodeGeneratorMethods:isMultiretNode(node)
+  if not node then return false end
+  return PARSER_MULTIRET_NODE_TYPES[node.TYPE]
+end
+
+function CodeGeneratorMethods:updateJumpInstruction(instructionIndex)
+  local currentInstructionIndex = #self.code
+  local jumpDistance = currentInstructionIndex - instructionIndex
+  local instruction = self.code[instructionIndex]
+  instruction[3] = jumpDistance
+end
+
+function CodeGeneratorMethods:updateJumpInstructions(list)
+  for _, instructionIndex in ipairs(list) do
+    self:updateJumpInstruction(instructionIndex)
+  end
+end
+
+function CodeGeneratorMethods:findOrCreateConstant(value)
+  if self.constantLookup[value] then
+    return self.constantLookup[value]
+  end
+  table.insert(self.constants, value)
+  local constantIndex = -(#self.constants)
+  self.constantLookup[value] = constantIndex
+  return constantIndex
+end
+
+function CodeGeneratorMethods:findOrCreateUpvalue(value)
+  if self.upvalueLookup[value] then
+    return self.upvalueLookup[value]
+  end
+  table.insert(self.upvalues, value)
+  local upvalueIndex = #self.upvalues - 1
+  self.upvalueLookup[value] = upvalueIndex
+  return upvalueIndex
+end
+
+function CodeGeneratorMethods:addInstruction(opname, a, b, c)
+  local instruction = { opname, a, b, c }
+  table.insert(self.code, instruction)
+  return #self.code
+end
+
+--// Expression Compilation //--
+function CodeGeneratorMethods:compileNumberNode(node, expressionRegister)
+  local constantIndex = self:findOrCreateConstant(node.Value)
+  -- OP_LOADK [A, Bx]    R(A) := Kst(Bx)
+  self:addInstruction("LOADK", expressionRegister, constantIndex)
+  return expressionRegister
+end
+
+function CodeGeneratorMethods:compileStringNode(node, expressionRegister)
+  local constantIndex = self:findOrCreateConstant(node.Value)
+  -- OP_LOADK [A, Bx]    R(A) := Kst(Bx)
+  self:addInstruction("LOADK", expressionRegister, constantIndex)
+  return expressionRegister
+end
+
+function CodeGeneratorMethods:compileFunctionNode(node, expressionRegister)
+  self:processFunction(node, expressionRegister)
+  return expressionRegister
+end
+
+function CodeGeneratorMethods:compileFunctionCallNode(node, expressionRegister)
+  -- Special register allocation case for function calls as they can be used both
+  -- as expressions and statements
+  expressionRegister = expressionRegister or self:allocateRegister()
+
+  local selfArgumentRegister
+  -- Check if it's not a method call
+  if not node.WithSelf then
+    self:processExpressionNode(node.Expression, expressionRegister)
+  else
+    -- Prepare a register for the self argument to be used
+    -- later in the method call instruction
+    local nodeExpressionIndex      = node.Expression.Index
+    local nodeExpressionExpression = node.Expression.Expression
+    self:processExpressionNode(nodeExpressionExpression, expressionRegister)
+    selfArgumentRegister = self:allocateRegister()
+    local nodeIndexRegister = self:processExpressionNode(nodeExpressionIndex)
+    -- OP_SELF [A, B, C]    R(A+1) := R(B) R(A) := R(B)[RK(C)]
+    self:addInstruction("SELF", expressionRegister, expressionRegister, nodeIndexRegister)
+    self:deallocateRegister(nodeIndexRegister)
+  end
+  local argumentRegisters = self:processExpressionNodes(node.Arguments)
+  if selfArgumentRegister then
+    -- Add an extra register for the self argument
+    table.insert(argumentRegisters, 1, selfArgumentRegister)
+  end
+  local returnAmount   = math.max(0, node.ReturnValueAmount + 1)
+  local argumentAmount = #argumentRegisters + 1
+  if self:isMultiretNode(node.Arguments[#node.Arguments]) then
+    argumentAmount = 0
+  end
+  -- OP_CALL [A, B, C]    R(A), ... ,R(A+C-2) := R(A)(R(A+1), ... ,R(A+B-1))
+  self:addInstruction("CALL", expressionRegister, argumentAmount, returnAmount)
+  self:deallocateRegisters(argumentRegisters)
+  local returnRegisters = { expressionRegister }
+  for _ = expressionRegister + 1, expressionRegister + node.ReturnValueAmount - 1 do
+    table.insert(returnRegisters, self:allocateRegister())
+  end
+
+  return unpack(returnRegisters)
+end
+
+function CodeGeneratorMethods:compileConstantNode(node, expressionRegister)
+  local nodeValue = node.Value
+  if nodeValue ~= "nil" then
+    local secondValue = (nodeValue == "true" and 1) or 0
+    -- OP_LOADBOOL [A, B, C]    R(A) := (Bool)B if (C) pc++
+    self:addInstruction("LOADBOOL", expressionRegister, secondValue, 0)
+  else
+    -- OP_LOADNIL [A, B]    R(A) := ... := R(B) := nil
+    self:addInstruction("LOADNIL", expressionRegister, expressionRegister)
+  end
+  return expressionRegister
+end
+
+function CodeGeneratorMethods:compileVarArgNode(node, expressionRegister)
+  local returnAmount = node.ReturnValueAmount + 1
+  if returnAmount <= 0 then returnAmount = 0 end
+  -- OP_VARARG [A, B]    R(A), R(A+1), ..., R(A+B-1) = vararg
+  self:addInstruction("VARARG", expressionRegister, returnAmount)
+  local returnRegisters = { expressionRegister }
+  for _ = expressionRegister + 1, expressionRegister + node.ReturnValueAmount - 1 do
+    table.insert(returnRegisters, self:allocateRegister())
+  end
+  return unpack(returnRegisters)
+end
+
+function CodeGeneratorMethods:compileTableIndexNode(node, expressionRegister)
+  self:processExpressionNode(node.Expression, expressionRegister)
+  local indexRegister = self:processExpressionNode(node.Index)
+  -- OP_GETTABLE [A, B, C]    R(A) := R(B)[RK(C)]
+  self:addInstruction("GETTABLE", expressionRegister, expressionRegister, indexRegister)
+  self:deallocateRegister(indexRegister)
+  return expressionRegister
+end
+
+function CodeGeneratorMethods:compileTableNode(node, expressionRegister)
+  local implicitElements = node.ImplicitElements
+  local explicitElements = node.ExplicitElements
+  local sizeB = math.min(#implicitElements, 255)
+  local sizeC = math.min(#explicitElements, 255)
+  -- OP_NEWTABLE [A, B, C]    R(A) := {} (size = B,C)
+  self:addInstruction("NEWTABLE", expressionRegister, sizeB, sizeC)
+  for _, element in ipairs(explicitElements) do
+    local valueRegister = self:processExpressionNode(element.Value)
+    local keyRegister   = self:processExpressionNode(element.Key)
+    self:deallocateRegisters({ keyRegister, valueRegister })
+
+    -- OP_SETTABLE [A, B, C]    R(A)[RK(B)] := RK(C)
+    self:addInstruction("SETTABLE", expressionRegister, keyRegister, valueRegister)
+  end
+
+  local pages = math.ceil(#implicitElements / COMPILER_SETLIST_MAX)
+  for page = 1, pages do
+    local startIndex = (page - 1) * COMPILER_SETLIST_MAX + 1
+    local endIndex   = math.min(page * COMPILER_SETLIST_MAX, #implicitElements)
+    local currentPageRegisters = {}
+    for elementIndex = startIndex, endIndex do
+      local element       = implicitElements[elementIndex]
+      local elementValue  = element.Value
+      local valueRegister = self:processExpressionNode(elementValue)
+
+      table.insert(currentPageRegisters, valueRegister)
+    end
+    local lastElement               = implicitElements[endIndex]
+    local lastElementValue          = lastElement.Value.Value
+    local currentPageRegisterAmount = #currentPageRegisters
+    if page == pages and self:isMultiretNode(lastElementValue) then
+      -- B = 0: Doesn't have a fixed amount of keys (multiret)
+      currentPageRegisterAmount = 0
+    end
+    -- OP_SETLIST [A, B, C]    R(A)[(C-1)*FPF+i] := R(A+i), 1 <= i <= B
+    self:addInstruction("SETLIST", expressionRegister, currentPageRegisterAmount, page)
+    self:deallocateRegisters(currentPageRegisters)
+  end
+
+  return expressionRegister
+end
+
+function CodeGeneratorMethods:compileVariableNode(node, expressionRegister)
+  local variableType = node.VariableType
+  if variableType == "Global" then
+    -- OP_GETGLOBAL [A, Bx]    R(A) := Gbl[Kst(Bx)]
+    self:addInstruction("GETGLOBAL", expressionRegister, self:findOrCreateConstant(node.Value))
+  elseif variableType == "Local" then
+    local variableRegister = self:findVariableRegister(node.Value)
+    -- OP_MOVE [A, B]    R(A) := R(B)
+    self:addInstruction("MOVE", expressionRegister, variableRegister)
+  elseif variableType == "Upvalue" then
+    -- OP_GETUPVAL [A, B]    R(A) := UpValue[B]
+    self:addInstruction("GETUPVAL", expressionRegister, self:findOrCreateUpvalue(node.Value))
+  end
+  return expressionRegister
+end
+
+function CodeGeneratorMethods:compileBinaryOperatorNode(node, expressionRegister)
+  local nodeOperator = node.Operator
+  if COMPILER_SIMPLE_ARICHMETIC_OPERATOR_LOOKUP[nodeOperator] then
+    local opcode = COMPILER_SIMPLE_ARICHMETIC_OPERATOR_LOOKUP[nodeOperator]
+    local leftExpressionRegister = self:processExpressionNode(node.Left)
+    local rightExpressionRegister = self:processExpressionNode(node.Right)
+    self:addInstruction(opcode, expressionRegister, leftExpressionRegister, rightExpressionRegister)
+    self:deallocateRegisters({ leftExpressionRegister, rightExpressionRegister })
+  elseif COMPILER_CONTROL_FLOW_OPERATOR_LOOKUP[nodeOperator] then
+    local leftExpressionRegister = self:processExpressionNode(node.Left, expressionRegister)
+    local isConditionTrue = (nodeOperator == "and" and 0) or 1
+    -- OP_TEST [A, C]    if not (R(A) <=> C) then pc++
+    self:addInstruction("TEST", leftExpressionRegister, 0, isConditionTrue)
+    -- OP_JMP [A, sBx]    pc+=sBx
+    local jumpInstructionIndex = self:addInstruction("JMP", 0, 0)
+    self:processExpressionNode(node.Right, expressionRegister)
+    self:updateJumpInstruction(jumpInstructionIndex)
+  elseif COMPILER_COMPARISON_OPERATOR_LOOKUP[nodeOperator] then
+    local leftExpressionRegister = self:processExpressionNode(node.Left)
+    local rightExpressionRegister = self:processExpressionNode(node.Right)
+    local instruction, flag = unpack(COMPILER_COMPARISON_INSTRUCTION_LOOKUP[nodeOperator])
+    if nodeOperator == ">" or nodeOperator == ">=" then
+      leftExpressionRegister, rightExpressionRegister = rightExpressionRegister, leftExpressionRegister
+    end
+    self:addInstruction(instruction, flag, leftExpressionRegister, rightExpressionRegister)
+    -- OP_JMP [A, sBx]    pc+=sBx
+    self:addInstruction("JMP", 0, 1)
+    -- OP_LOADBOOL [A, B, C]    R(A) := (Bool)B if (C) pc++
+    self:addInstruction("LOADBOOL", expressionRegister, 0, 1)
+    self:addInstruction("LOADBOOL", expressionRegister, 1, 0)
+    self:deallocateRegisters({ leftExpressionRegister, rightExpressionRegister })
+  elseif nodeOperator == ".." then
+    local leftExpressionRegister = self:processExpressionNode(node.Left)
+    local rightExpressionRegister = self:processExpressionNode(node.Right)
+    if (rightExpressionRegister - leftExpressionRegister) ~= 1 then
+      error("Concatenation requires consecutive registers")
+    end
+    -- OP_CONCAT [A, B, C]    R(A) := R(B).. ... ..R(C)
+    self:addInstruction("CONCAT", expressionRegister, leftExpressionRegister, rightExpressionRegister)
+    self:deallocateRegisters({ leftExpressionRegister, rightExpressionRegister })
+  end
+  return expressionRegister
+end
+
+function CodeGeneratorMethods:compileUnaryOperatorNode(node, expressionRegister)
+  local nodeOperator      = node.Operator
+  local operatorOpcode    = COMPILER_UNARY_OPERATOR_LOOKUP[nodeOperator]
+  local operandExpression = self:processExpressionNode(node.Operand)
+  self:addInstruction(operatorOpcode, expressionRegister, operandExpression)
+  self:deallocateRegister(operandExpression)
+  return expressionRegister
+end
+
+--// Statement Compilation //--
+function CodeGeneratorMethods:compileBreakStatementNode()
+  -- OP_JMP [A, sBx]    pc+=sBx
+  local jumpInstructionIndex = self:addInstruction("JMP", 0, 0)
+  table.insert(self.breakInstructions, jumpInstructionIndex)
+end
+
+function CodeGeneratorMethods:compileLocalFunctionDeclarationNode(node)
+  local name          = node.Name
+  local localRegister = self:allocateRegister()
+  self:registerVariable(name, localRegister)
+  self:processFunction(node, localRegister, name)
+end
+function CodeGeneratorMethods:compileFunctionDeclarationNode(node)
+  local expression = node.Expression
+  local fields     = node.Fields
+  if #fields > 0 then
+    local closureRegister = self:allocateRegister()
+    local lastField = fields[#fields]
+    self:processFunction(node, closureRegister, lastField)
+    local expressionRegister = self:processExpressionNode(expression)
+    for index, field in ipairs(fields) do
+      local fieldRegister = self:allocateRegister()
+      -- OP_LOADK [A, Bx]    R(A) := Kst(Bx)
+      self:addInstruction("LOADK", fieldRegister, self:findOrCreateConstant(field))
+      if index == #fields then
+        -- OP_SETTABLE [A, B, C]    R(A)[RK(B)] := RK(C)
+        self:addInstruction("SETTABLE", expressionRegister, fieldRegister, closureRegister)
+      else
+        -- OP_GETTABLE [A, B, C]    R(A) := R(B)[RK(C)]
+        self:addInstruction("GETTABLE", expressionRegister, expressionRegister, fieldRegister)
+      end
+      self:deallocateRegister(fieldRegister)
+    end
+    self:deallocateRegisters({ closureRegister, expressionRegister })
+    return
+  end
+  local variableName = expression.Value
+  if expression.VariableType == "Local" then
+    local localRegister = self:findVariableRegister(variableName)
+    self:processFunction(node, localRegister, variableName)
+  elseif expression.VariableType == "Upvalue" then
+    local closureRegister = self:allocateRegister()
+    self:processFunction(node, closureRegister, variableName)
+    -- OP_SETUPVAL [A, B]    UpValue[B] := R(A)
+    self:addInstruction("SETUPVAL", closureRegister, self:findOrCreateUpvalue(variableName))
+    self:deallocateRegister(closureRegister)
+  elseif expression.VariableType == "Global" then
+    local globalRegister = self:allocateRegister()
+    self:processFunction(node, globalRegister, variableName)
+    -- OP_SETGLOBAL [A, Bx]    Gbl[Kst(Bx)] := R(A)
+    self:addInstruction("SETGLOBAL", globalRegister, self:findOrCreateConstant(variableName))
+    self:deallocateRegister(globalRegister)
+  end
+end
+
+function CodeGeneratorMethods:compileLocalDeclarationNode(node)
+  local variableExpressionRegisters = {}
+  for index, expression in ipairs(node.Expressions) do
+    local expressionRegisters = { self:processExpressionNode(expression) }
+    for index2, expressionRegister in ipairs(expressionRegisters) do
+      table.insert(variableExpressionRegisters, expressionRegister)
+      if not node.Variables[index + index2 - 1] then
+        -- If this expression doesn't have a corresponding variable, deallocate it
+        self:deallocateRegister(expressionRegister)
+      end
+    end
+  end
+  for index, localName in ipairs(node.Variables) do
+    local expressionRegister = variableExpressionRegisters[index]
+    if not expressionRegister then
+      expressionRegister = self:allocateRegister()
+      -- Load nil into the register
+      -- OP_LOADNIL [A, B]    R(A) := ... := R(B) := nil
+      self:addInstruction("LOADNIL", expressionRegister, expressionRegister)
+    end
+    self:registerVariable(localName, expressionRegister)
+  end
+end
+
+function CodeGeneratorMethods:compileNumericForLoopNode(node)
+  local variableName  = node.VariableName
+  local expressions   = node.Expressions
+  local codeblock     = node.CodeBlock
+  local startRegister = self:processExpressionNode(expressions[1])
+  local endRegister   = self:processExpressionNode(expressions[2])
+  local stepRegister  = self:allocateRegister()
+  if expressions[3] then
+    stepRegister = self:processExpressionNode(expressions[3], stepRegister)
+  else
+    -- OP_LOADK [A, Bx]    R(A) := Kst(Bx)
+    self:addInstruction("LOADK", stepRegister, self:findOrCreateConstant(1))
+  end
+  -- OP_FORPREP [A, sBx]    R(A)-=R(A+2) pc+=sBx
+  local forprepInstructionIndex = self:addInstruction("FORPREP", startRegister, 0)
+  local loopStart = #self.code
+  self:registerVariable(variableName, startRegister)
+  local oldBreakInstructions = self.breakInstructions
+  self.breakInstructions = {}
+  self:processCodeBlock(codeblock)
+  local loopEnd = #self.code
+  self:updateJumpInstruction(forprepInstructionIndex)
+  -- OP_FORLOOP [,A sBx]   R(A)+=R(A+2)
+  --                       if R(A) <?= R(A+1) then { pc+=sBx R(A+3)=R(A) }
+  self:addInstruction("FORLOOP", startRegister, loopStart - loopEnd - 1)
+  self:updateJumpInstructions(self.breakInstructions)
+  self.breakInstructions = oldBreakInstructions
+  self:unregisterVariable(variableName)
+  self:deallocateRegisters({ endRegister, stepRegister }) -- (start register is already deallocated)
+end
+
+function CodeGeneratorMethods:compileGenericForLoopNode(node)
+  local iteratorVariables   = node.IteratorVariables
+  local expressions         = node.Expressions
+  local codeblock           = node.CodeBlock
+  local expressionRegisters = self:processExpressionNodes(expressions)
+  -- OP_JMP [A, sBx]    pc+=sBx
+  local startJmpInstructionIndex = self:addInstruction("JMP", 0, 0)
+  local forGeneratorRegister = expressionRegisters[1]
+  local forStateRegister     = expressionRegisters[2]
+  local forControlRegister   = expressionRegisters[3]
+  if not (forGeneratorRegister and forStateRegister and forControlRegister) then
+    error("Expected 3 expression registers")
+  end
+  local loopStart = #self.code
+  for _, iteratorVariable in ipairs(iteratorVariables) do
+    local iteratorRegister = self:allocateRegister()
+    self:registerVariable(iteratorVariable, iteratorRegister)
+  end
+  local oldBreakInstructions = self.breakInstructions
+  self.breakInstructions = {}
+  self:processCodeBlock(codeblock)
+  self:updateJumpInstruction(startJmpInstructionIndex)
+  -- OP_TFORLOOP [A, C]    R(A+3), ... ,R(A+2+C) := R(A)(R(A+1), R(A+2))
+  --                       if R(A+3) ~= nil then R(A+2)=R(A+3) else pc++
+  self:addInstruction("TFORLOOP", forGeneratorRegister, 0, #iteratorVariables)
+  -- OP_JMP [A, sBx]    pc+=sBx
+  self:addInstruction("JMP", 0, loopStart - #self.code - 1)
+  self:updateJumpInstructions(self.breakInstructions)
+  self.breakInstructions = oldBreakInstructions
+  self:deallocateRegisters(expressionRegisters)
+  self:unregisterVariables(iteratorVariables)
+end
+
+function CodeGeneratorMethods:compileReturnStatementNode(node)
+  local expressionRegisters = self:processExpressionNodes(node.Expressions)
+  local startRegister       = expressionRegisters[1] or 0
+  local returnAmount        = #node.Expressions + 1
+  local lastExpression      = node.Expressions[#node.Expressions]
+  if self:isMultiretNode(lastExpression) then
+    returnAmount = 0
+  end
+  -- OP_RETURN [A, B]    return R(A), ... ,R(A+B-2)
+  self:addInstruction("RETURN", startRegister, returnAmount, 0)
+  self:deallocateRegisters(expressionRegisters) -- Deallocate return expression registers
+end
+
+function CodeGeneratorMethods:compileWhileLoopNode(node)
+  local loopStart         = #self.code
+  local conditionRegister = self:processExpressionNode(node.Condition)
+  -- OP_TEST [A, C]    if not (R(A) <=> C) then pc++
+  self:addInstruction("TEST", conditionRegister, 0, 0)
+  -- OP_JMP [A, sBx]    pc+=sBx
+  local jumpInstructionIndex = self:addInstruction("JMP", 0, 0)
+  self:deallocateRegister(conditionRegister)
+  local oldBreakInstructions = self.breakInstructions
+  self.breakInstructions = {}
+  self:processCodeBlock(node.CodeBlock)
+  -- OP_JMP [A, sBx]    pc+=sBx
+  self:addInstruction("JMP", 0, loopStart - #self.code - 1)
+  self:updateJumpInstruction(jumpInstructionIndex)
+  self:updateJumpInstructions(self.breakInstructions)
+  self.breakInstructions = oldBreakInstructions
+end
+
+function CodeGeneratorMethods:compileRepeatLoopNode(node)
+  local loopStart = #self.code
+  self:processCodeBlock(node.CodeBlock)
+  local conditionRegister = self:processExpressionNode(node.Condition)
+  -- OP_TEST [A, C]    if not (R(A) <=> C) then pc++
+  self:addInstruction("TEST", conditionRegister, 0, 0)
+  -- OP_JMP [A, sBx]    pc+=sBx
+  self:addInstruction("JMP", 0, loopStart - #self.code - 1)
+  self:deallocateRegister(conditionRegister)
+end
+
+function CodeGeneratorMethods:compileDoBlockNode(node)
+  self:processCodeBlock(node.CodeBlock)
+end
+
+function CodeGeneratorMethods:compileIfStatementNode(node)
+  local branches      = node.Branches
+  local elseCodeBlock = node.ElseCodeBlock
+  local jumpToEndInstructions = {}
+  for index, branch in ipairs(branches) do
+    local condition = branch.Condition
+    local codeBlock = branch.CodeBlock
+    local conditionRegister = self:processExpressionNode(condition)
+    -- OP_TEST [A, C]    if not (R(A) <=> C) then pc++
+    self:addInstruction("TEST", conditionRegister, 0, 0)
+    -- OP_JMP [A, sBx]    pc+=sBx
+    local conditionJumpInstructionIndex = self:addInstruction("JMP", 0, 0)
+    self:deallocateRegister(conditionRegister)
+    self:processCodeBlock(codeBlock)
+    if index < #branches or elseCodeBlock then
+      -- OP_JMP [A, sBx]    pc+=sBx
+      local jumpInstructionIndex = self:addInstruction("JMP", 0, 0)
+      table.insert(jumpToEndInstructions, jumpInstructionIndex)
+    end
+    self:updateJumpInstruction(conditionJumpInstructionIndex)
+  end
+  if elseCodeBlock then
+    self:processCodeBlock(elseCodeBlock)
+  end
+
+  self:updateJumpInstructions(jumpToEndInstructions)
+end
+
+function CodeGeneratorMethods:compileVariableAssignmentNode(node)
+  local expressionRegisters = self:processExpressionNodes(node.Expressions)
+  for index, lvalue in ipairs(node.LValues) do
+    local lvalueType = lvalue.TYPE
+    if lvalueType == "Variable" then
+      local variableType = lvalue.VariableType
+      local variableName = lvalue.Value
+      local expressionRegister = expressionRegisters[index]
+      if not expressionRegister then error("Expected an expression for assignment") end
+      if variableType == "Local" then
+        local variableRegister = self:findVariableRegister(variableName)
+        -- OP_MOVE [A, B]    R(A) := R(B)
+        self:addInstruction("MOVE", variableRegister, expressionRegister)
+      elseif variableType == "Global" then
+        -- OP_SETGLOBAL [A, Bx]    Gbl[Kst(Bx)] := R(A)
+        self:addInstruction("SETGLOBAL", expressionRegister, self:findOrCreateConstant(variableName))
+      elseif variableType == "Upvalue" then
+        -- OP_SETUPVAL [A, B]    UpValue[B] := R(A)
+        self:addInstruction("SETUPVAL", expressionRegister, self:findOrCreateUpvalue(variableName))
+      end
+    elseif lvalueType == "TableIndex" then
+      local indexRegister = self:processExpressionNode(lvalue.Index)
+      local tableExpressionRegister = self:processExpressionNode(lvalue.Expression)
+      local expressionRegister = expressionRegisters[index]
+      if not expressionRegister then error("Expected an expression for assignment") end
+      -- OP_SETTABLE [A, B, C]    R(A)[RK(B)] := RK(C)
+      self:addInstruction("SETTABLE", tableExpressionRegister, indexRegister, expressionRegister)
+      self:deallocateRegisters({ indexRegister, expressionRegister, tableExpressionRegister })
+    else
+      error("Unsupported lvalue type: " .. lvalueType)
+    end
+  end
+  self:deallocateRegisters(expressionRegisters)
+end
+
+--// Code Generation //--
+function CodeGeneratorMethods:processExpressionNode(node, expressionRegister)
+  expressionRegister = expressionRegister or self:allocateRegister()
+  local nodeType = node.TYPE
+  while nodeType == "Expression" do
+    node = node.Value
+    nodeType = node.TYPE
+  end
+
+  if     nodeType == "Number"         then return self:compileNumberNode(node, expressionRegister)
+  elseif nodeType == "String"         then return self:compileStringNode(node, expressionRegister)
+  elseif nodeType == "Function"       then return self:compileFunctionNode(node, expressionRegister)
+  elseif nodeType == "FunctionCall"   then return self:compileFunctionCallNode(node, expressionRegister)
+  elseif nodeType == "Constant"       then return self:compileConstantNode(node, expressionRegister)
+  elseif nodeType == "VarArg"         then return self:compileVarArgNode(node, expressionRegister)
+  elseif nodeType == "TableIndex"     then return self:compileTableIndexNode(node, expressionRegister)
+  elseif nodeType == "Table"          then return self:compileTableNode(node, expressionRegister)
+  elseif nodeType == "Variable"       then return self:compileVariableNode(node, expressionRegister)
+  elseif nodeType == "BinaryOperator" then return self:compileBinaryOperatorNode(node, expressionRegister)
+  elseif nodeType == "UnaryOperator"  then return self:compileUnaryOperatorNode(node, expressionRegister)
+  end
+
+  error("Unsupported expression node type: " .. tostring(nodeType))
+end
+
+function CodeGeneratorMethods:processStatementNode(node)
+  local nodeType = node.TYPE
+  if nodeType == "FunctionCall" then
+    -- Instantly deallocate the register
+    self:deallocateRegisters({ self:compileFunctionCallNode(node) })
+    return
+  elseif nodeType == "BreakStatement"           then return self:compileBreakStatementNode()
+  elseif nodeType == "LocalFunctionDeclaration" then return self:compileLocalFunctionDeclarationNode(node)
+  elseif nodeType == "FunctionDeclaration"      then return self:compileFunctionDeclarationNode(node)
+  elseif nodeType == "LocalDeclaration"         then return self:compileLocalDeclarationNode(node)
+  elseif nodeType == "NumericForLoop"           then return self:compileNumericForLoopNode(node)
+  elseif nodeType == "GenericForLoop"           then return self:compileGenericForLoopNode(node)
+  elseif nodeType == "ReturnStatement"          then return self:compileReturnStatementNode(node)
+  elseif nodeType == "WhileLoop"                then return self:compileWhileLoopNode(node)
+  elseif nodeType == "RepeatLoop"               then return self:compileRepeatLoopNode(node)
+  elseif nodeType == "DoBlock"                  then return self:compileDoBlockNode(node)
+  elseif nodeType == "IfStatement"              then return self:compileIfStatementNode(node)
+  elseif nodeType == "VariableAssignment"       then return self:compileVariableAssignmentNode(node)
+  end
+
+  error("Unsupported statement node type: " .. tostring(nodeType))
+end
+
+function CodeGeneratorMethods:processExpressionNodes(list)
+  local registers = {}
+  for _, node in ipairs(list) do
+    local currentExpressionRegisters = { self:processExpressionNode(node) }
+    for _, register in ipairs(currentExpressionRegisters) do
+      table.insert(registers, register)
+    end
+  end
+  return registers
+end
+
+function CodeGeneratorMethods:processCodeBlock(list)
+  self:enterScope()
+  for _, node in ipairs(list) do
+    self:processStatementNode(node)
+  end
+  self:exitScope()
+end
+
+function CodeGeneratorMethods:processFunctionCodeBlock(list, parameters)
+  self:enterScope(true) -- Enter with function scope
+  for _, parameter in ipairs(parameters) do
+    self:registerVariable(parameter, self:allocateRegister())
+  end
+  for _, node in ipairs(list) do
+    self:processStatementNode(node)
+  end
+  self:exitScope()
+end
+
+function CodeGeneratorMethods:processFunction(node, expressionRegister, name)
+  local codeBlock    = node.CodeBlock
+  local parameters   = node.Parameters or {}
+  local isVarArg     = node.IsVarArg
+  local oldProto     = self.currentProto
+  local proto        = self:newProto()
+  proto.numParams    = #parameters
+  proto.isVarArg     = isVarArg
+  proto.functionName = (name and "@" .. name) or "@anonymous"
+
+  self:processFunctionCodeBlock(codeBlock, parameters)
+
+  -- OP_RETURN [A, B]    return R(A), ... ,R(A+B-2)
+  self:addInstruction("RETURN", 0, 1) -- Default return statement
+  self:setProto(oldProto)
+  table.insert(self.protos, proto)
+  -- R(A) := closure(KPROTO[Bx], R(A), ... ,R(A+n))
+  self:addInstruction("CLOSURE", expressionRegister, #self.protos - 1)
+
+  for _, upvalueName in ipairs(proto.upvalues) do
+    local upvalueType = self:getVariableType(upvalueName)
+    if upvalueType == "Local" then
+      -- OP_MOVE [A, B]    R(A) := R(B)
+      self:addInstruction("MOVE", 0, self:findVariableRegister(upvalueName))
+    elseif upvalueType == "Upvalue" then
+      -- OP_GETUPVAL [A, B]    R(A) := UpValue[B]
+      self:addInstruction("GETUPVAL", 0, self:findOrCreateUpvalue(upvalueName))
+    else
+      error("Unsupported upvalue type: " .. upvalueType)
+    end
+  end
+
+  return proto
+end
+
+--// Main Code Generation //--
+function CodeGeneratorMethods:generate()
+  local proto = self:newProto()
+  proto.isVarArg = true
+  self:processCodeBlock(self.ast)
+  -- OP_RETURN [A, B]    return R(A), ... ,R(A+B-2)
+  self:addInstruction("RETURN", 0, 1) -- Default return statement
+  return proto
+end
+
+--* CodeGenerator *--
+local CodeGenerator = {}
+function CodeGenerator.new(ast)
+  local CodeGeneratorInstance = {}
+
+  --// Initialization //--
+  CodeGeneratorInstance.ast = ast
+  CodeGeneratorInstance.scopes = {}
+  CodeGeneratorInstance.breakInstructions = {}
+  CodeGeneratorInstance.currentProto = nil
+
+  -- Proto fields extraction
+  CodeGeneratorInstance.takenRegisters = {}
+  CodeGeneratorInstance.code = nil
+  CodeGeneratorInstance.constants = nil
+  CodeGeneratorInstance.constantLookup = nil
+  CodeGeneratorInstance.upvalues = nil
+  CodeGeneratorInstance.upvalueLookup = nil
+  CodeGeneratorInstance.protos = nil
+
+  --// Method Binding //--
+  insertValues(CodeGeneratorInstance, CodeGeneratorMethods)
+
+  return CodeGeneratorInstance
+end
+
 
 --[[
   ============================================================================
@@ -2003,158 +2303,180 @@ local COMPILER_OPCODE_LOOKUP = {
   to write the bytecode to a file, which can then be executed by the
 --]]
 
+--* CompilerMethods *--
+local CompilerMethods = {}
+
+--// Byte Manipulation //--
+function CompilerMethods:toUnsigned(value)
+  value = value or 0
+  return math.max(value, -value - 1)
+end
+
+function CompilerMethods:makeBytes(value, byteCount)
+  local bytes = {}
+  for i = 1, byteCount do
+    bytes[i] = value % 256
+    value = math.floor(value / 256)
+  end
+  return string.char(unpack(bytes))
+end
+
+function CompilerMethods:makeOneByte(value)
+  return string.char(value % 256)
+end
+
+function CompilerMethods:makeFourBytes(value)
+  return self:makeBytes(value, 4)
+end
+
+function CompilerMethods:makeEightBytes(value)
+  return self:makeBytes(value, 8)
+end
+
+function CompilerMethods:makeDouble(value)
+  local sign = (value < 0 and 1) or 0
+  local mantissa, exponent = math.frexp(math.abs(value))
+
+  if value == 0 then -- zero
+    mantissa, exponent = 0, 0
+  elseif value == 1/0 then -- infinity
+    mantissa, exponent = 0, 2047
+  else
+    mantissa = (mantissa * 2 - 1) * (0.5 * (2 ^ 53))
+    exponent = exponent + 1022
+  end
+
+  -- 52-bit mantissa
+  local double = {}
+  for index = 1, 6 do
+    double[index] = mantissa % 256
+    mantissa = math.floor(mantissa / 256)
+  end
+
+  -- exponent (11 bit)
+  double[7] = ((mantissa % 16) + (exponent % 16) * 16) % 256
+  double[8] = ((sign * 128) + math.floor(exponent / 16)) % 256
+  return string.char(unpack(double))
+end
+
+--// Bytecode Generation //--
+function CompilerMethods:makeString(value)
+  value = value .. "\0"
+  local size = self:makeEightBytes(#value)
+  return size .. value
+end
+
+function CompilerMethods:makeConstant(constantValue, constantType)
+  if constantType == "number" then
+    return self:makeOneByte(3) .. self:makeDouble(constantValue)
+  elseif constantType == "string" then
+    return self:makeOneByte(4) .. self:makeString(constantValue)
+  elseif constantType == "boolean" then
+    local secondByte = (constantValue and 1) or 0
+    return self:makeOneByte(1) .. self:makeOneByte(secondByte)
+  elseif constantType == "nil" then
+    return self:makeOneByte(0)
+  end
+  error("Unsupported constant type: " .. constantType)
+end
+
+function CompilerMethods:makeInstruction(instruction)
+  local opcodeTable = COMPILER_OPCODE_LOOKUP[instruction[1]]
+  local opcode, opmode = unpack(opcodeTable)
+  local a = self:toUnsigned(instruction[2])
+  local instructionNumber = opcode
+  instructionNumber = instructionNumber + (a * 64) -- a << 6
+  if opmode == MODE_iABC then
+    local b = self:toUnsigned(instruction[3])
+    local c = self:toUnsigned(instruction[4])
+    instructionNumber = instructionNumber + (b * 8388608) -- b << 23
+    instructionNumber = instructionNumber + (c * 16384)   -- c << 14
+  elseif opmode == MODE_iABx then
+    local b = self:toUnsigned(instruction[3])
+    instructionNumber = instructionNumber + (b * 16384) -- b << 14
+  elseif opmode == MODE_iAsBx then
+    local b = instruction[3]
+    instructionNumber = instructionNumber + ((b + 131071) * 16384) -- (b + 131071) << 14
+  end
+  return self:makeFourBytes(instructionNumber)
+end
+
+function CompilerMethods:makeConstantSection(proto)
+  local constantSection = self:makeFourBytes(#proto.constants) -- Number of constants
+  for _, constant in ipairs(proto.constants) do
+    local constantType = type(constant)
+    constantSection = constantSection .. self:makeConstant(constant, constantType)
+  end
+  constantSection = constantSection .. self:makeFourBytes(#proto.protos) -- Number of protos
+  for _, childProto in ipairs(proto.protos) do
+    constantSection = constantSection .. self:makeFunction(childProto)
+  end
+  return constantSection
+end
+
+function CompilerMethods:makeCodeSection(proto)
+  local codeSection = self:makeFourBytes(#proto.code) -- Number of instructions
+  for _, instruction in ipairs(proto.code) do
+    codeSection = codeSection .. self:makeInstruction(instruction)
+  end
+  return codeSection
+end
+
+function CompilerMethods:makeFunction(proto)
+  local functionHeader = self:makeString(proto.functionName)                       -- Function name
+  functionHeader = functionHeader .. self:makeFourBytes(0)                         -- Line defined
+  functionHeader = functionHeader .. self:makeFourBytes(0)                         -- Last line defined
+  functionHeader = functionHeader .. self:makeOneByte(#proto.upvalues)             -- nups (Number of upvalues)
+  functionHeader = functionHeader .. self:makeOneByte(proto.numParams)             -- Number of parameters
+  functionHeader = functionHeader .. self:makeOneByte((proto.isVarArg and 2) or 0) -- Is vararg
+  functionHeader = functionHeader .. self:makeOneByte(128)                         -- Max stack size
+  functionHeader = functionHeader .. self:makeCodeSection(proto)                   -- Code section
+  functionHeader = functionHeader .. self:makeConstantSection(proto)               -- Constant section
+  functionHeader = functionHeader .. self:makeFourBytes(0)                         -- Line info
+  functionHeader = functionHeader .. self:makeFourBytes(0)                         -- Local variables
+  functionHeader = functionHeader .. self:makeFourBytes(0)                         -- Upvalues
+
+  return functionHeader
+end
+
+function CompilerMethods:makeHeader()
+  local header = "\27Lua"              -- Signature
+  header = header .. string.char(0x51) -- Version 5.1
+  header = header .. "\0"              -- Format 0 (official)
+  header = header .. "\1"              -- Little endian
+  header = header .. "\4"              -- sizeof(int)
+  header = header .. "\8"              -- sizeof(size_t)
+  header = header .. "\4"              -- sizeof(Instruction)
+  header = header .. "\8"              -- sizeof(lua_Number)
+  header = header .. "\0"              -- Integral flag
+  return header
+end
+
+--// Main //--
+function CompilerMethods:compile()
+  local header = self:makeHeader()
+  local functionHeader = self:makeFunction(self.mainProto)
+  return header .. functionHeader
+end
+
+--* Compiler *--
 local Compiler = {}
-function Compiler.compile(mainProto)
-  --// BYTE MANIPULATION (needed for compiling to bytecode) //--
-  local function toUnsigned(value)
-    value = value or 0
-    return math.max(value, -value - 1)
-  end
-  local function makeBytes(value, byteCount)
-    local bytes = {}
-    for i = 1, byteCount do
-      bytes[i] = value % 256
-      value = math.floor(value / 256)
-    end
-    return string.char(unpack(bytes))
-  end
-  local function makeOneByte(value)
-    return string.char(value % 256)
-  end
-  local function makeFourBytes(value)
-    return makeBytes(value, 4)
-  end
-  local function makeEightBytes(value)
-    return makeBytes(value, 8)
-  end
-  local function makeDouble(value)
-    local sign = (value < 0 and 1) or 0
-    local mantissa, exponent = math.frexp(math.abs(value))
+function Compiler.new(mainProto)
+  local CompilerInstance = {}
 
-    if value == 0 then -- zero
-      mantissa, exponent = 0, 0
-    elseif value == 1/0 then -- infinity
-      mantissa, exponent = 0, 2047
-    else
-      mantissa = (mantissa * 2 - 1) * (0.5 * (2 ^ 53))
-      exponent = exponent + 1022
-    end
+  --// Initialization //--
+  CompilerInstance.mainProto = mainProto
 
-    -- 52-bit mantissa
-    local double = {}
-    for index = 1, 6 do
-      double[index] = mantissa % 256
-      mantissa = math.floor(mantissa / 256)
-    end
+  --// Method Binding //--
+  insertValues(CompilerInstance, CompilerMethods)
 
-    -- exponent (11 bit)
-    double[7] = ((mantissa % 16) + (exponent % 16) * 16) % 256
-    double[8] = ((sign * 128) + math.floor(exponent / 16)) % 256
-    return string.char(unpack(double))
-  end
-
-  --// BYTECODE GENERATION //--
-  local makeString, makeConstant, makeInstruction, makeConstantSection,
-        makeCodeSection, makeFunction, makeHeader
-  function makeString(value)
-    value = value .. "\0"
-    local size = makeEightBytes(#value)
-    return size .. value
-  end
-  function makeConstant(constantValue, constantType)
-    if constantType == "number" then
-      return makeOneByte(3) .. makeDouble(constantValue)
-    elseif constantType == "string" then
-      return makeOneByte(4) .. makeString(constantValue)
-    elseif constantType == "boolean" then
-      local secondByte = (constantValue and 1) or 0
-      return makeOneByte(1) .. makeOneByte(secondByte)
-    elseif constantType == "nil" then
-      return makeOneByte(0)
-    end
-    error("Unsupported constant type: " .. constantType)
-  end
-  function makeInstruction(instruction)
-    local opcodeTable = COMPILER_OPCODE_LOOKUP[instruction[1]]
-    local opcode, opmode = unpack(opcodeTable)
-    local a = toUnsigned(instruction[2])
-    local instructionNumber = opcode
-    instructionNumber = instructionNumber + (a * 64) -- a << 6
-    if opmode == MODE_iABC then
-      local b = toUnsigned(instruction[3])
-      local c = toUnsigned(instruction[4])
-      instructionNumber = instructionNumber + (b * 8388608) -- b << 23
-      instructionNumber = instructionNumber + (c * 16384)   -- c << 14
-    elseif opmode == MODE_iABx then
-      local b = toUnsigned(instruction[3])
-      instructionNumber = instructionNumber + (b * 16384) -- b << 14
-    elseif opmode == MODE_iAsBx then
-      local b = instruction[3]
-      instructionNumber = instructionNumber + ((b + 131071) * 16384) -- (b + 131071) << 14
-    end
-    return makeFourBytes(instructionNumber)
-  end
-  function makeConstantSection(proto)
-    local constantSection = makeFourBytes(#proto.constants) -- Number of constants
-    for _, constant in ipairs(proto.constants) do
-      local constantType = type(constant)
-      constantSection = constantSection .. makeConstant(constant, constantType)
-    end
-    constantSection = constantSection .. makeFourBytes(#proto.protos) -- Number of protos
-    for _, childProto in ipairs(proto.protos) do
-      constantSection = constantSection .. makeFunction(childProto)
-    end
-    return constantSection
-  end
-  function makeCodeSection(proto)
-    local codeSection = makeFourBytes(#proto.code) -- Number of instructions
-    for _, instruction in ipairs(proto.code) do
-      codeSection = codeSection .. makeInstruction(instruction)
-    end
-    return codeSection
-  end
-  function makeFunction(proto)
-    local functionHeader = makeString(proto.functionName) -- Function name
-    functionHeader = functionHeader .. makeFourBytes(0) -- Line defined
-    functionHeader = functionHeader .. makeFourBytes(0) -- Last line defined
-    functionHeader = functionHeader .. makeOneByte(#proto.upvalues) -- nups (Number of upvalues)
-    functionHeader = functionHeader .. makeOneByte(proto.numParams) -- Number of parameters
-    functionHeader = functionHeader .. makeOneByte((proto.isVarArg and 2) or 0) -- Is vararg
-    functionHeader = functionHeader .. makeOneByte(128) -- Max stack size
-    functionHeader = functionHeader .. makeCodeSection(proto)
-    functionHeader = functionHeader .. makeConstantSection(proto)
-    functionHeader = functionHeader .. makeFourBytes(0) -- Line info
-    functionHeader = functionHeader .. makeFourBytes(0) -- Local variables
-    functionHeader = functionHeader .. makeFourBytes(0) -- Upvalues
-    return functionHeader
-  end
-  function makeHeader()
-    local header = "\27Lua" -- Signature
-    header = header .. string.char(0x51)  -- Version 5.1
-    header = header .. "\0"  -- Format 0 (official)
-    header = header .. "\1"  -- Little endian
-    header = header .. "\4"  -- sizeof(int)
-    header = header .. "\8"  -- sizeof(size_t)
-    header = header .. "\4"  -- sizeof(Instruction)
-    header = header .. "\8"  -- sizeof(lua_Number)
-    header = header .. "\0"  -- Integral flag
-    return header
-  end
-
-  --// MAIN //--
-  local function compile()
-    local header = makeHeader()
-    local functionHeader = makeFunction(mainProto)
-    return header .. functionHeader
-  end
-
-  return compile()
+  return CompilerInstance
 end
 
 -- Now I'm just exporting everything...
 return {
-  Tokenizer            = Tokenizer,
-  Parser               = Parser,
-  InstructionGenerator = InstructionGenerator,
-  Compiler             = Compiler
+  Tokenizer     = Tokenizer,
+  Parser        = Parser,
+  CodeGenerator = CodeGenerator,
+  Compiler      = Compiler
 }
