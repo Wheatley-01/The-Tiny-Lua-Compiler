@@ -956,14 +956,14 @@ function ParserMethods:consumeMethodCall(currentExpression)
   return functionCallNode
 end
 
-function ParserMethods:consumeOptionalSemilcolon()
+function ParserMethods:consumeOptionalSemicolon()
   local nextToken = self:lookAhead(1)
   if self:checkCharacter(";", nextToken) then
     self:consume(1)
   end
 end
 
---// EXPRESSSION PARSERS //--
+--// EXPRESSION PARSERS //--
 function ParserMethods:parsePrimaryExpression()
   if not self.currentToken then return end
   local tokenType = self.currentToken.TYPE
@@ -1282,7 +1282,7 @@ function ParserMethods:parseFor()
 end
 
 function ParserMethods:parseFunction()
-  -- fuction <variable>[.<field>]:<method>(...)
+  -- function <variable>[.<field>]:<method>(...)
   --   <codeblock>
   -- end
 
@@ -1379,7 +1379,7 @@ function ParserMethods:getNextNode()
   else
     node = self:parseFunctionCallOrVariableAssignment()
   end
-  self:consumeOptionalSemilcolon()
+  self:consumeOptionalSemicolon()
 
   return node
 end
@@ -1444,7 +1444,7 @@ end
 local unpack = (unpack or table.unpack)
 
 local COMPILER_SETLIST_MAX = 50
-local COMPILER_SIMPLE_ARICHMETIC_OPERATOR_LOOKUP = {
+local COMPILER_SIMPLE_ARITHMETIC_OPERATOR_LOOKUP = {
   ["+"] = "ADD", ["-"] = "SUB",
   ["*"] = "MUL", ["/"] = "DIV",
   ["%"] = "MOD", ["^"] = "POW"
@@ -1813,8 +1813,8 @@ end
 
 function CodeGeneratorMethods:compileBinaryOperatorNode(node, expressionRegister)
   local nodeOperator = node.Operator
-  if COMPILER_SIMPLE_ARICHMETIC_OPERATOR_LOOKUP[nodeOperator] then
-    local opcode = COMPILER_SIMPLE_ARICHMETIC_OPERATOR_LOOKUP[nodeOperator]
+  if COMPILER_SIMPLE_ARITHMETIC_OPERATOR_LOOKUP[nodeOperator] then
+    local opcode = COMPILER_SIMPLE_ARITHMETIC_OPERATOR_LOOKUP[nodeOperator]
     local leftExpressionRegister = self:processExpressionNode(node.Left)
     local rightExpressionRegister = self:processExpressionNode(node.Right)
     self:addInstruction(opcode, expressionRegister, leftExpressionRegister, rightExpressionRegister)
