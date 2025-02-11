@@ -954,7 +954,7 @@ function ParserMethods:consumeMethodCall(currentExpression)
   self:consume(1) -- Consume the method identifier
   local methodIndexNode = { TYPE = "TableIndex",
     Index = { TYPE = "String",
-      Value = methodIdentifier`
+      Value = methodIdentifier
     },
     Expression = currentExpression
   }
