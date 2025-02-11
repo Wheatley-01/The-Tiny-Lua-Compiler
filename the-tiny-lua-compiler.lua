@@ -2111,12 +2111,14 @@ end
 
 function CodeGeneratorMethods:compileRepeatLoopNode(node)
   local loopStart = #self.code
+  self.breakInstructions = {}
   self:processCodeBlock(node.CodeBlock)
   local conditionRegister = self:processExpressionNode(node.Condition)
   -- OP_TEST [A, C]    if not (R(A) <=> C) then pc++
   self:addInstruction("TEST", conditionRegister, 0, 0)
   -- OP_JMP [A, sBx]    pc+=sBx
   self:addInstruction("JMP", 0, loopStart - #self.code - 1)
+  self:updateJumpInstructions(self.breakInstructions)
   self:deallocateRegister(conditionRegister)
 end
 
