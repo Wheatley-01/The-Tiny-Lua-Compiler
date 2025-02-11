@@ -256,27 +256,27 @@ end
 
 -- Checks if a character is \t (tab), \n (newline), or \r (carriage return)
 function TokenizerMethods:isWhitespace(char)
-  return char:match("%s")
+  return char and char:match("%s")
 end
 
 -- Checks if a character is a digit (0-9)
 function TokenizerMethods:isNumber(char)
-  return char:match("%d")
+  return char and char:match("%d")
 end
 
 -- Checks if a number is hexadecimal (0-9, a-f, A-F)
 function TokenizerMethods:isHexadecimalNumber(char)
-  return char:match("[%da-fA-F]")
+  return char and char:match("[%da-fA-F]")
 end
 
 -- Checks if a character is a letter, digit, or underscore
 function TokenizerMethods:isIdentifier(char)
-  return char:match("[%a%d_]")
+  return char and char:match("[%a%d_]")
 end
 
 -- Checks if a character is a letter or underscore
 function TokenizerMethods:isIdentifierStart(char)
-  return char:match("[%a_]")
+  return char and char:match("[%a_]")
 end
 
 function TokenizerMethods:isScientificNotationPrefix(char)
