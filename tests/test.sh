@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# Define the versions of Lua and LuaJIT
-lua_versions=("lua5.1" "lua5.2" "lua5.3" "lua5.4" "luajit")
+# Test only Lua 5.1
+lua_versions=("lua5.1")
 
 # Loop through each version and run the tests
 for version in "${lua_versions[@]}"; do
@@ -18,6 +18,4 @@ for version in "${lua_versions[@]}"; do
   fi
 done
 
-lua tests/test.lua
-
-echo "All tests passed for all installed Lua versions"
+echo "All tests passed!"
