@@ -260,7 +260,7 @@ function TokenizerMethods:isWhitespace(char)
 end
 
 -- Checks if a character is a digit (0-9)
-function TokenizerMethods:isNumber(char)
+function TokenizerMethods:isDigit(char)
   return char and char:match("%d")
 end
 
@@ -284,6 +284,13 @@ function TokenizerMethods:isScientificNotationPrefix(char)
 end
 
 --// Multi-Character Checkers //--
+function TokenizerMethods:isNumberStart()
+  local curChar = self.curChar
+  return (curChar and self:isDigit(curChar)
+    or (curChar == "." and self:isDigit(self:lookAhead(1)))
+  )
+end
+
 function TokenizerMethods:isHexadecimalNumberPrefix()
   local nextChar = self:lookAhead(1)
   return self.curChar == "0" and (
@@ -355,7 +362,7 @@ function TokenizerMethods:consumeNumber()
   end
 
   -- [0-9]*
-  while self:isNumber(self:lookAhead(1)) do
+  while self:isDigit(self:lookAhead(1)) do
     self:consume(1) -- Consume digits
   end
 
@@ -363,7 +370,7 @@ function TokenizerMethods:consumeNumber()
   -- \.[0-9]+
   if self:lookAhead(1) == "." then
     self:consume(1) -- Consume the "."
-    while self:isNumber(self:lookAhead(1)) do
+    while self:isDigit(self:lookAhead(1)) do
       self:consume(1)
     end
   end
@@ -375,7 +382,7 @@ function TokenizerMethods:consumeNumber()
     if self:lookAhead(1) == "+" or self:lookAhead(1) == "-" then
       self:consume(1) -- Consume optional sign
     end
-    while self:isNumber(self:lookAhead(1)) do
+    while self:isDigit(self:lookAhead(1)) do
       self:consume(1) -- Consume exponent digits
     end
   end
@@ -523,7 +530,7 @@ function TokenizerMethods:getNextToken()
   elseif self:isComment() then
     self:consumeComment()
     return
-  elseif self:isNumber(curChar) then
+  elseif self:isNumberStart() then
     return { TYPE = "Number", Value = tonumber(self:consumeNumber()) }
   elseif self:isIdentifierStart(curChar) then
     local identifier = self:consumeIdentifier()
