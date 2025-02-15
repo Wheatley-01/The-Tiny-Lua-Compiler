@@ -51,14 +51,26 @@ testRunner("String delimiters", function()
   ]==]) == "doublesingle\n      multi-linenested")
 end)
 
+testRunner("String escape sequences", function()
+  -- Numeric escapes
+  assert(compileAndRun([[
+    return "\9\99\101"
+  ]]) == "\tce")
+
+  -- Control characters
+  assert(compileAndRun([[
+    return "\a\b\f\n\r\t\v"
+  ]]) == "\7\b\f\n\r\t\v")
+end)
+
 testRunner("Number formats", function()
-  assert(compileAndRun("return 123 + 0xA2 + 0X1F + 0.5 + .25 + 1e2") == 123 + 0xA2 + 0x1F + 0.5 + 0.25 + 100)
+  assert(compileAndRun("return 123 + 0xA2 + 0X1F + 0.5 + .25 + 1e2") == 416.75)
 end)
 
 testGroup("Expressions and Operators")
 
 testRunner("Operator precedence", function()
-  assert(compileAndRun("return 2 + 3 * 4 ^ 2 / 2") == 2 + (3 * (4 ^ 2) / 2))
+  assert(compileAndRun("return 2 + 3 * 4 ^ 2 / 2") == 26)
 end)
 
 testRunner("Relational operators", function()
@@ -78,11 +90,26 @@ testGroup("Statements")
 
 testRunner("Chained assignments", function()
   assert(compileAndRun([[
-    local a,b,c = 1,2,3
+    local a, b, c = 1, 2, 3
     a, b = b, a
     c = a + b
     return c
   ]]) == 3)
+
+  assert(compileAndRun([[
+    local a, b = {}, {}
+    a.x, b.x = 1, 2
+    return a.x + b.x
+  ]]) == 3)
+
+  assert(compileAndRun([[
+    local a = {}
+    local b = a
+
+    a.x, a = 1, {x = 4}
+
+    return b.x + a.x
+  ]]) == 5)
 end)
 
 testRunner("Multiple returns", function()
@@ -361,23 +388,176 @@ testRunner("Single-line comments", function()
 end)
 
 testRunner("Multi-line comments", function()
-  assert(compileAndRun([=[
+  assert(compileAndRun([==[
     --[[
       This is a multi-line comment
       It can span multiple lines
+      FALSE ENDING] ]=]
     ]]
     return 42
-  ]=]) == 42)
+  ]==]) == 42)
 
-  assert(compileAndRun([==[
+  assert(compileAndRun([===[
     --[=[
       This is a nested multi-line comment
       It can span multiple lines
-      FALSE ENDING]
+      FALSE ENDING]] ]= ]==]
     ]=]
     return 42
-  ]==]) == 42)
+  ]===]) == 42)
 end)
+
+testGroup("Miscellaneous")
+
+testRunner("Parentesis-less function calls", function()
+  assert(compileAndRun([[
+    local function f(x) return x end
+    local value1 = #f"hello"
+    local value2 = f{b = 10}.b
+    return value1 + value2
+  ]]) == 15)
+end)
+
+testGroup("Complex General Tests")
+
+testRunner("Factorial function", function()
+  assert(compileAndRun([[
+    local function factorial(n)
+      if n == 0 then
+        return 1
+      else
+        return n * factorial(n - 1)
+      end
+    end
+
+    return factorial(5)
+  ]]) == 120)
+end)
+
+testRunner("Fibonacci sequence", function()
+  assert(compileAndRun([[
+    local function fib(n)
+      if n <= 1 then
+        return n
+      else
+        return fib(n - 1) + fib(n - 2)
+      end
+    end
+
+    return fib(10)
+  ]]) == 55)
+end)
+
+testRunner("Quicksort algorithm", function()
+  assert(compileAndRun([[
+    local function quicksort(t)
+      if #t < 2 then return t end
+
+      local pivot = t[1]
+      local a, b, c = {}, {}, {}
+      for _,v in ipairs(t) do
+        if     v < pivot then a[#a + 1] = v
+        elseif v > pivot then c[#c + 1] = v
+        else                  b[#b + 1] = v
+        end
+      end
+
+      a = quicksort(a)
+      c = quicksort(c)
+      for _, v in ipairs(b) do a[#a + 1] = v end
+      for _, v in ipairs(c) do a[#a + 1] = v end
+      return a
+    end
+
+    return table.concat(
+      quicksort({5, 3, 8, 2, 9, 1, 6, 0, 7, 4}),
+      ", "
+    )
+  ]]) == "0, 1, 2, 3, 4, 5, 6, 7, 8, 9")
+end)
+
+testRunner("Game of Life simulation", function()
+  assert(compileAndRun([=[
+    local function T2D(w, h)
+      local t = {}
+      for y = 1, h do
+        t[y] = {}
+        for x = 1, w do t[y][x] = 0 end
+      end
+      return t
+    end
+
+    local Life = {
+      new = function(self, w, h)
+        return setmetatable({ w = w, h = h, gen = 1, curr = T2D(w, h), next = T2D(w, h) }, { __index = self })
+      end,
+      set = function(self, coords)
+        for i = 1, #coords, 2 do
+          self.curr[coords[i + 1]][coords[i]] = 1
+        end
+      end,
+      step = function(self)
+        local curr, next = self.curr, self.next
+        local ym1, y, yp1 = self.h - 1, self.h, 1
+        for i = 1, self.h do
+          local xm1, x, xp1 = self.w - 1, self.w, 1
+          for j = 1, self.w do
+            local sum = curr[ym1][xm1] + curr[ym1][x] + curr[ym1][xp1] +
+                curr[y][xm1] + curr[y][xp1] +
+                curr[yp1][xm1] + curr[yp1][x] + curr[yp1][xp1]
+            next[y][x] = ((sum == 2) and curr[y][x]) or ((sum == 3) and 1) or 0
+            xm1, x, xp1 = x, xp1, xp1 + 1
+          end
+          ym1, y, yp1 = y, yp1, yp1 + 1
+        end
+        self.curr, self.next, self.gen = self.next, self.curr, self.gen + 1
+      end,
+      evolve = function(self, times)
+        times = times or 1
+        for i = 1, times do self:step() end
+      end,
+      render = function(self)
+        local output = {}
+        for y = 1, self.h do
+          for x = 1, self.w do
+            table.insert(output, self.curr[y][x] == 0 and "□ " or "■ ")
+          end
+          table.insert(output, "\n")
+        end
+        return table.concat(output)
+      end
+    }
+
+    local life = Life:new(5, 5)
+    life:set({ 2, 1, 3, 2, 1, 3, 2, 3, 3, 3 })
+    life:evolve(3)
+    return life:render()
+  ]=]) == "□ □ □ □ □ \n□ ■ □ □ □ \n□ □ ■ ■ □ \n□ ■ ■ □ □ \n□ □ □ □ □ \n")
+end)
+
+testRunner("Self-compilation", function()
+  -- Might take a while to run
+
+  local testCode = [[
+    local code = io.open("the-tiny-lua-compiler.lua"):read("*a")
+    local tlc  = compileAndRun(code)
+
+    local code = "return 2 * 10 + (function() return 2 * 5 end)()"
+
+    local tokens   = tlc.Tokenizer.new(code):tokenize()
+    local ast      = tlc.Parser.new(tokens):parse()
+    local proto    = tlc.CodeGenerator.new(ast):generate()
+    local bytecode = tlc.Compiler.new(proto):compile()
+    local result   = loadstring(bytecode)()
+
+    return result
+  ]]
+
+  _G.compileAndRun = compileAndRun
+  assert(compileAndRun(testCode) == 30)
+  _G.compileAndRun = nil
+end)
+
 
 -- TEST SUMMARY --
 print("\n\27[1mTest Results:\27[0m")
