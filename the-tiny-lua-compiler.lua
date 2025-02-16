@@ -279,6 +279,7 @@ function TokenizerMethods:isIdentifierStart(char)
   return char and char:match("[%a_]")
 end
 
+-- Checks if a character is the start of a scientific notation number (e.g., 1e10)
 function TokenizerMethods:isScientificNotationPrefix(char)
   return char == "e" or char == "E"
 end
@@ -286,8 +287,11 @@ end
 --// Multi-Character Checkers //--
 function TokenizerMethods:isNumberStart()
   local curChar = self.curChar
-  return (curChar and self:isDigit(curChar)
-    or (curChar == "." and self:isDigit(self:lookAhead(1)))
+  return (
+curChar and self:isDigit(curChar)
+    or (
+curChar == "." and self:isDigit(self:lookAhead(1))
+)
   )
 end
 
@@ -299,13 +303,13 @@ function TokenizerMethods:isHexadecimalNumberPrefix()
 end
 
 function TokenizerMethods:isVarArg()
-  return self.curChar == "."
+  return self.curChar          == "."
          and self:lookAhead(1) == "."
          and self:lookAhead(2) == "."
 end
 
 function TokenizerMethods:isComment()
-  return self.curChar == "-"
+  return self.curChar          == "-"
          and self:lookAhead(1) == "-"
 end
 
@@ -313,7 +317,10 @@ function TokenizerMethods:isString()
   local curChar  = self.curChar
   local nextChar = self:lookAhead(1)
   return (curChar == '"' or curChar == "'")
-      or (curChar == "[" and (nextChar == "[" or nextChar == "="))
+      or (curChar == "[" and (
+nextChar == "[" or nextChar == "="
+      )
+)
 end
 
 --// Consumers //--
