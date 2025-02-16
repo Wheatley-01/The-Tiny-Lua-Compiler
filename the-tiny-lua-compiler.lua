@@ -1922,10 +1922,10 @@ function CodeGeneratorMethods:compileBinaryOperatorNode(node, expressionRegister
   local nodeOperator = node.Operator
   if COMPILER_SIMPLE_ARICHMETIC_OPERATOR_LOOKUP[nodeOperator] then
     local opcode = COMPILER_SIMPLE_ARICHMETIC_OPERATOR_LOOKUP[nodeOperator]
-    local leftExpressionRegister = self:processExpressionNode(node.Left)
+    self:processExpressionNode(node.Left, expressionRegister)
     local rightExpressionRegister = self:processExpressionNode(node.Right)
-    self:addInstruction(opcode, expressionRegister, leftExpressionRegister, rightExpressionRegister)
-    self:deallocateRegisters({ leftExpressionRegister, rightExpressionRegister })
+    self:addInstruction(opcode, expressionRegister, expressionRegister, rightExpressionRegister)
+    self:deallocateRegister(rightExpressionRegister)
   elseif COMPILER_CONTROL_FLOW_OPERATOR_LOOKUP[nodeOperator] then
     local leftExpressionRegister = self:processExpressionNode(node.Left, expressionRegister)
     local isConditionTrue = (nodeOperator == "and" and 0) or 1
