@@ -257,6 +257,15 @@ if not oldChar and not updatedChar then
   return updatedChar
 end
 
+function TokenizerMethods:consumeCharacter(character)
+  if self.curChar == character then
+    -- TODO: Check how much the function call overhead affects performance
+    return self:consume(1)
+  end
+
+  error("Expected character '" .. character .. "', got: '" .. self.curChar .. "'")
+end
+
 --// Character Checkers //--
 
 -- Checks if a character is \t (tab), \n (newline), or \r (carriage return)
@@ -332,6 +341,9 @@ end
 function TokenizerMethods:consumeWhitespace()
   local startChar = self.curChar
   local startPos  = self.curCharPos
+
+  -- It uses "== startChar" instead of "self:isWhitespace"
+  -- as a cheap optimization trick
   while self:lookAhead(1) == startChar do
     self:consume(1)
   end
@@ -437,35 +449,33 @@ function TokenizerMethods:consumeSimpleString()
 end
 
 function TokenizerMethods:consumeLongString()
-  self:consume(1) -- Consume the "[" character
+  self:consumeCharacter("[")
   local start = self.curCharPos
   local depth = 0
   while self.curChar == "=" do
-    self:consume(1) -- Consume the "=" character
+    self:consumeCharacter("=")
     depth = depth + 1
   end
-  if self.curChar ~= "[" then
-    error("invalid long string delimiter")
-  end
-
-  self:consume(1) -- Consume the "[" character
+  self:consumeCharacter("[")
+  
+local curChar = self.curChar
   while true do
-    if self.curChar == "]" then
+    if curChar == "]" then
       self:consume(1) -- Consume the "]" character
       local closingDepth = 0
       while self.curChar == "=" do
-        self:consume(1) -- Consume the "=" character
+        self:consumeCharacter("=")
         closingDepth = closingDepth + 1
       end
       if closingDepth == depth and self.curChar == "]" then
         -- Exit the loop, as the closing delimiter is fully matched
         break
       end
-    elseif self.curChar == "\0" then
+    elseif not curChar then
       error("Unclosed long comment")
     end
 
-    self:consume(1)
+    curChar = self:consume(1)
   end
 
   return self.code:sub(start + depth + 1, self.curCharPos - 2 - depth)
@@ -486,7 +496,7 @@ function TokenizerMethods:consumeOperator()
   local index = 0
   while true do
     local character = self:lookAhead(index)
-    node = node[character] -- Advance to the deeper node
+    node = node[character]
     if not node then break end
     operator = node.Value
     index    = index + 1
@@ -498,35 +508,40 @@ end
 
 function TokenizerMethods:consumeShortComment()
   local curChar = self.curChar
-  while curChar ~= "\0" and curChar ~= "\n" do
+  while curChar and curChar ~= "\n" do
     curChar = self:consume(1)
   end
 end
 
 function TokenizerMethods:consumeLongComment()
-  self:consume(1) -- Consumes the "[" character
+  self:consumeCharacter("[")
   local depth = 0
   while self.curChar == "=" do
-    self:consume(1) -- Consume the "=" character
+    self:consumeCharacter("=")
     depth = depth + 1
   end
-  if self.curChar ~= "[" then return self:consumeShortComment() end
+  if self.curChar ~= "[" then
+return self:consumeShortComment()
+end
+
+  local curChar = self.curChar
   while true do
-    if self.curChar == "]" then
-      self:consume(1) -- Consume the "]" character
+    if not curChar then
+      error("Unclosed long comment")
+    elseif curChar == "]" then
+      self:consumeCharacter("]")
       local closingDepth = 0
       while self.curChar == "=" do
-        self:consume(1) -- Consume the "=" character
+        self:consumeCharacter("=")
         closingDepth = closingDepth + 1
       end
 
       if self.curChar == "]" and closingDepth == depth then
         break
       end
-    elseif self.curChar == "\0" then
-      error("Unclosed long comment")
-    end
-    self:consume(1)
+        end
+
+    curChar = self:consume(1)
   end
 end
 
