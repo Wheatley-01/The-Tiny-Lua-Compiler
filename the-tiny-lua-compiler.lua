@@ -397,30 +397,48 @@ function TokenizerMethods:consumeNumber()
   return self.code:sub(start, self.curCharPos)
 end
 
+function TokenizerMethods:consumeEscapeSequence()
+  self:consumeCharacter("\\")
+
+  local curChar = self.curChar
+  if TOKENIZER_ESCAPED_CHARACTER_CONVERSIONS[curChar] then
+    return TOKENIZER_ESCAPED_CHARACTER_CONVERSIONS[curChar]
+  elseif self:isDigit(curChar) then
+    local numberString = curChar
+    for i = 1, 2 do
+      local nextChar = self:lookAhead(1)
+      if not self:isDigit(nextChar) then break end
+      numberString = numberString .. nextChar
+      self:consume(1)
+    end
+
+    local number = tonumber(numberString)
+    if number > 255 then
+      error("escape sequence too large near '\\" .. numberString .. "'")
+    end
+
+    return string.char(number)
+  end
+
+  error("invalid escape sequence near '\\" .. curChar .. "'")
+end
+
 function TokenizerMethods:consumeSimpleString()
   local delimiter = self.curChar
   local newString = {}
-  self:consume(1) -- Consume the delimiter
-  while self.curChar ~= delimiter do
-    if self.curChar == "\\" then
-      local nextChar = self:consume(1)
-      if nextChar:match("%d") then -- Numeric escape sequence?
-        local number = self:consumeInteger(3)
-        local luaNumber = tonumber(number)
-        if not luaNumber then
-          error("invalid escape sequence near '\\" .. number .. "'")
-        end
+  self:consume(1) -- Consume the quote
 
-        table.insert(newString, string.char(luaNumber))
-      elseif TOKENIZER_ESCAPED_CHARACTER_CONVERSIONS[nextChar] then
-        table.insert(newString, TOKENIZER_ESCAPED_CHARACTER_CONVERSIONS[nextChar])
-      else
-        error("invalid escape sequence near '\\" .. nextChar .. "'")
-      end
+  local curChar = self.curChar
+  while curChar ~= delimiter do
+    if not curChar then
+      error("Unclosed string")
+    elseif curChar == "\\" then
+      local consumedEscape = self:consumeEscapeSequence()
+      table.insert(newString, consumedEscape)
     else
-      table.insert(newString, self.curChar)
-    end
-    self:consume(1)
+      table.insert(newString, curChar)
+      end
+    curChar = self:consume(1)
   end
   return table.concat(newString)
 end
