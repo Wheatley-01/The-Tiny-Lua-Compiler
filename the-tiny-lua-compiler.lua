@@ -245,10 +245,15 @@ end
 
 -- Consumes (skips) n characters in the character stream
 function TokenizerMethods:consume(n)
+local oldChar        = self.curChar
   local updatedCharPos = self.curCharPos + n
   local updatedChar    = self.charStream[updatedCharPos]
   self.curCharPos      = updatedCharPos
   self.curChar         = updatedChar
+if not oldChar and not updatedChar then
+    error("Infinite loop detected, terminating tokenizer")
+  end
+
   return updatedChar
 end
 
