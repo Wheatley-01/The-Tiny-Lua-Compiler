@@ -1031,14 +1031,14 @@ function ParserMethods:consumeMethodCall(currentExpression)
   return functionCallNode
 end
 
-function ParserMethods:consumeOptionalSemilcolon()
+function ParserMethods:consumeOptionalSemicolon()
   local nextToken = self:lookAhead(1)
   if self:checkCharacter(";", nextToken) then
     self:consume(1)
   end
 end
 
---// EXPRESSSION PARSERS //--
+--// EXPRESSION PARSERS //--
 function ParserMethods:parsePrimaryExpression()
   if not self.currentToken then return end
   local tokenType = self.currentToken.TYPE
@@ -1362,7 +1362,7 @@ function ParserMethods:parseFor()
 end
 
 function ParserMethods:parseFunction()
-  -- fuction <variable>[.<field>]:<method>(...)
+  -- function <variable>[.<field>]:<method>(...)
   --   <codeblock>
   -- end
   self:consumeToken("Keyword", "function")
@@ -1458,7 +1458,7 @@ function ParserMethods:getNextNode()
   else
     node = self:parseFunctionCallOrVariableAssignment()
   end
-  self:consumeOptionalSemilcolon()
+  self:consumeOptionalSemicolon()
 
   return node
 end
@@ -1529,7 +1529,7 @@ local unpack = (unpack or table.unpack)
 
 local COMPILER_MIN_STACK_SIZE = 2 -- Registers 0/1 are always valid
 local COMPILER_SETLIST_MAX = 50
-local COMPILER_SIMPLE_ARICHMETIC_OPERATOR_LOOKUP = {
+local COMPILER_SIMPLE_ARITHMETIC_OPERATOR_LOOKUP = {
   ["+"] = "ADD", ["-"] = "SUB",
   ["*"] = "MUL", ["/"] = "DIV",
   ["%"] = "MOD", ["^"] = "POW"
@@ -1637,7 +1637,6 @@ end
 function CodeGeneratorMethods:deallocateRegisters(registers)
   local registerLookup = createLookupTable(registers)
   local amountOfRegistersToDeallocate = #registers
-  local registersToDellocate = {}
   for i = 1, amountOfRegistersToDeallocate do
     local register = self.nextFreeRegister - i
     if not registerLookup[register] then
@@ -1961,8 +1960,8 @@ end
 
 function CodeGeneratorMethods:compileBinaryOperatorNode(node, expressionRegister)
   local nodeOperator = node.Operator
-  if COMPILER_SIMPLE_ARICHMETIC_OPERATOR_LOOKUP[nodeOperator] then
-    local opcode = COMPILER_SIMPLE_ARICHMETIC_OPERATOR_LOOKUP[nodeOperator]
+  if COMPILER_SIMPLE_ARITHMETIC_OPERATOR_LOOKUP[nodeOperator] then
+    local opcode = COMPILER_SIMPLE_ARITHMETIC_OPERATOR_LOOKUP[nodeOperator]
     self:processExpressionNode(node.Left, expressionRegister)
     local rightExpressionRegister = self:processExpressionNode(node.Right)
     self:addInstruction(opcode, expressionRegister, expressionRegister, rightExpressionRegister)

@@ -409,7 +409,7 @@ end)
 
 testGroup("Miscellaneous")
 
-testRunner("Parentesis-less function calls", function()
+testRunner("Parenthesis-less function calls", function()
   assert(compileAndRun([[
     local function f(x) return x end
     local value1 = #f"hello"
