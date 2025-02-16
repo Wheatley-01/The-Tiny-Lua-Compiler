@@ -343,18 +343,6 @@ function TokenizerMethods:consumeIdentifier()
   return self.code:sub(start, self.curCharPos)
 end
 
-function TokenizerMethods:consumeInteger(maxLength)
-  local start = self.curCharPos
-  while self:lookAhead(1):match("%d") do
-    if (maxLength and (self.curCharPos - start) >= maxLength) then
-      break
-    end
-    self:consume(1)
-  end
-
-  return self.code:sub(start, self.curCharPos)
-end
-
 function TokenizerMethods:consumeNumber()
   local start = self.curCharPos
 
