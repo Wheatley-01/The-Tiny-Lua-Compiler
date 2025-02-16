@@ -1646,6 +1646,17 @@ function CodeGeneratorMethods:registerVariable(localName, register)
   self.locals[localName] = register
 end
 
+-- Used only when we register a variable with a placeholder register
+-- and we need to change it to the correct register
+function CodeGeneratorMethods:changeVariableRegister(localName, register)
+  local variable = self.locals[localName]
+  if not variable then
+    error("Attempt to change register of undeclared variable: " .. localName)
+  end
+
+  self.locals[localName] = register
+end
+
 function CodeGeneratorMethods:unregisterVariable(variableName)
   local variableRegister = self.locals[variableName]
   if not variableRegister then
@@ -1969,13 +1980,13 @@ end
 
 function CodeGeneratorMethods:compileLocalFunctionDeclarationNode(node)
   local name = node.Name
+self:registerVariable(name, -1) -- Placeholder variable
   -- Can't allocate the register before processing the function,
   -- use .nextFreeRegister instead
   local nextFreeRegister = self.nextFreeRegister
-
   self:processFunction(node, nextFreeRegister, name)
   local localRegister = self:allocateRegister()
-  self:registerVariable(name, localRegister)
+  self:changeVariableRegister(name, localRegister)
 end
 function CodeGeneratorMethods:compileFunctionDeclarationNode(node)
   local expression = node.Expression
