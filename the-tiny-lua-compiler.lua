@@ -952,7 +952,7 @@ function ParserMethods:consumeFunctionCall(currentExpression)
     Expression = currentExpression,
     Arguments = arguments,
     ReturnValueAmount = 1,
-    WithSelf = false
+    IsMethodCall = false
   }
 end
 
@@ -967,7 +967,7 @@ function ParserMethods:consumeImplicitFunctionCall(lvalue)
       Expression = lvalue,
       Arguments = arguments,
       ReturnValueAmount = 1,
-      WithSelf = false
+      IsMethodCall = false
     }
   end
 
@@ -977,7 +977,7 @@ function ParserMethods:consumeImplicitFunctionCall(lvalue)
     Expression = lvalue,
     Arguments = arguments,
     ReturnValueAmount = 1,
-    WithSelf = false
+    IsMethodCall = false
   }
 end
 
@@ -991,7 +991,8 @@ function ParserMethods:consumeMethodCall(currentExpression)
     Expression = currentExpression
   }
   local functionCallNode = self:consumeFunctionCall(methodIndexNode)
-  functionCallNode.WithSelf = true -- Mark the function call as a method call
+  -- Mark the function call as a method call
+  functionCallNode.IsMethodCall = true
   return functionCallNode
 end
 
@@ -1329,7 +1330,7 @@ function ParserMethods:parseFunction()
   local variableName = self:expectTokenType("Identifier", true).Value
   local variableType = self:getVariableType(variableName)
   local expression = { TYPE = "Variable", Value = variableName, VariableType = variableType }
-  local fields, isMethod = { }, false
+  local fields, IsMethodCall = { }, false
   while self:consume(1) do
     if self:checkCharacter(".") then
       self:consume(1) -- Consume the "."
@@ -1339,13 +1340,13 @@ function ParserMethods:parseFunction()
       self:consume(1) -- Consume the ":"
       local methodName = self:expectTokenType("Identifier", true).Value
       table.insert(fields, methodName)
-      isMethod = true
+      IsMethodCall = true
       self:consume(1) -- Consume the method name
       break
     else break end
   end
   local parameters, isVarArg = self:consumeParameterList()
-  if isMethod then
+  if IsMethodCall then
     table.insert(parameters, 1, "self")
   end
   local codeblock = self:parseCodeBlock(true, parameters)
@@ -1353,7 +1354,7 @@ function ParserMethods:parseFunction()
   return { TYPE = "FunctionDeclaration",
     Expression = expression,
     Fields = fields,
-    IsMethod = isMethod,
+    IsMethodCall = IsMethodCall,
     CodeBlock = codeblock,
     Parameters = parameters,
     IsVarArg = isVarArg
@@ -1790,7 +1791,7 @@ function CodeGeneratorMethods:compileFunctionCallNode(node, expressionRegister)
 
   local selfArgumentRegister
   -- Check if it's not a method call
-  if not node.WithSelf then
+  if not node.IsMethodCall then
     self:processExpressionNode(node.Expression, expressionRegister)
   else
     -- Prepare a register for the self argument to be used
