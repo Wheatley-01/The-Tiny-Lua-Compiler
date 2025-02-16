@@ -245,12 +245,12 @@ end
 
 -- Consumes (skips) n characters in the character stream
 function TokenizerMethods:consume(n)
-local oldChar        = self.curChar
+  local oldChar        = self.curChar
   local updatedCharPos = self.curCharPos + n
   local updatedChar    = self.charStream[updatedCharPos]
   self.curCharPos      = updatedCharPos
   self.curChar         = updatedChar
-if not oldChar and not updatedChar then
+  if not oldChar and not updatedChar then
     error("Infinite loop detected, terminating tokenizer")
   end
 
@@ -302,10 +302,10 @@ end
 function TokenizerMethods:isNumberStart()
   local curChar = self.curChar
   return (
-curChar and self:isDigit(curChar)
+    curChar and self:isDigit(curChar)
     or (
-curChar == "." and self:isDigit(self:lookAhead(1))
-)
+      curChar == "." and self:isDigit(self:lookAhead(1))
+    )
   )
 end
 
@@ -332,9 +332,9 @@ function TokenizerMethods:isString()
   local nextChar = self:lookAhead(1)
   return (curChar == '"' or curChar == "'")
       or (curChar == "[" and (
-nextChar == "[" or nextChar == "="
+        nextChar == "[" or nextChar == "="
       )
-)
+    )
 end
 
 --// Consumers //--
@@ -442,7 +442,7 @@ function TokenizerMethods:consumeSimpleString()
       table.insert(newString, consumedEscape)
     else
       table.insert(newString, curChar)
-      end
+    end
     curChar = self:consume(1)
   end
   return table.concat(newString)
@@ -457,8 +457,8 @@ function TokenizerMethods:consumeLongString()
     depth = depth + 1
   end
   self:consumeCharacter("[")
-  
-local curChar = self.curChar
+
+  local curChar = self.curChar
   while true do
     if curChar == "]" then
       self:consume(1) -- Consume the "]" character
@@ -521,8 +521,8 @@ function TokenizerMethods:consumeLongComment()
     depth = depth + 1
   end
   if self.curChar ~= "[" then
-return self:consumeShortComment()
-end
+    return self:consumeShortComment()
+  end
 
   local curChar = self.curChar
   while true do
@@ -539,7 +539,7 @@ end
       if self.curChar == "]" and closingDepth == depth then
         break
       end
-        end
+    end
 
     curChar = self:consume(1)
   end
@@ -711,6 +711,26 @@ function ParserMethods:consume(n)
   return updatedToken
 end
 
+function ParserMethods:consumeToken(tokenType, tokenValue)
+  local token = self.currentToken
+  if token.TYPE == tokenType and token.Value == tokenValue then
+    return self:consume(1)
+  end
+
+  error(string.format(
+    "Expected %s [%s] token, got: %s [%s]",
+    tokenType, tokenValue, token.TYPE, token.Value
+  ))
+end
+
+function ParserMethods:consumeTokenType(tokenType)
+  local token = self.currentToken
+  if token.TYPE == tokenType then
+    return self:consume(1)
+  end
+  error(string.format("Expected %s token, got: %s", tokenType, token.TYPE))
+end
+
 --// Token Expectation //--
 function ParserMethods:expectTokenType(expectedType)
   local actualType = tostring(self.currentToken and self.currentToken.TYPE)
@@ -843,37 +863,42 @@ function ParserMethods:consumeIdentifierList()
   while self.currentToken.TYPE == "Identifier" do
     table.insert(identifiers, self.currentToken.Value)
     if not self:isComma(self:lookAhead(1)) then break end
-    self:consume(2) -- Consume identifier and ","
+    -- Consume identifier and ","
+    self:consume(2)
   end
   return identifiers
 end
 
 function ParserMethods:consumeParameterList()
-  self:expectCharacter("(")
+  self:consumeToken("Character", "(")
   local parameters, isVarArg = {}, false
   while not self:checkCharacter(")") do
     if self.currentToken.TYPE == "Identifier" then
       table.insert(parameters, self.currentToken.Value)
     elseif self.currentToken.TYPE == "VarArg" then
       isVarArg = true
-      self:consume(1) -- Consume the "..."
+      -- Consume the "..."
+      self:consumeToken("VarArg")
       break
     end
-    self:consume(1) -- Consume the last token of the parameter
+    -- Consume the last token of the parameter
+    self:consume(1)
     if not self:isComma(self.currentToken) then break end
-    self:consume(1) -- Consume the comma
+    self:consumeToken("Character", ",")
   end
-  self:expectCharacter(")")
+  self:consumeToken("Character", ")")
   return parameters, isVarArg
 end
 
 function ParserMethods:consumeTableIndex(currentExpression)
-  self:consume(1) -- Consume the "." symbol
-  local indexToken = { TYPE = "String",
+  self:consumeToken("Character", ".")
+  local indexToken = {
+    TYPE = "String",
     Value = self.currentToken.Value
   }
+
   return { TYPE = "TableIndex",
-    Index = indexToken,
+    Index      = indexToken,
     Expression = currentExpression
   }
 end
@@ -955,7 +980,8 @@ function ParserMethods:consumeFunctionCall(currentExpression)
   self:consume(1) -- Consume the "("
   local arguments = self:consumeExpressions()
   self:adjustMultiretNodes(arguments, -1)
-  self:consume(1) -- Consume the last token of the expression
+  -- Consume the last token of the expression
+  self:consume(1)
   return { TYPE = "FunctionCall",
     Expression = currentExpression,
     Arguments = arguments,
@@ -990,7 +1016,8 @@ function ParserMethods:consumeImplicitFunctionCall(lvalue)
 end
 
 function ParserMethods:consumeMethodCall(currentExpression)
-  local methodIdentifier = self:consume(1).Value -- Consume the ":" character, and get the method identifier
+  -- Consume the ":" character, and get the method identifier
+  local methodIdentifier = self:consume(1).Value
   self:consume(1) -- Consume the method identifier
   local methodIndexNode = { TYPE = "TableIndex",
     Index = { TYPE = "String",
@@ -1174,11 +1201,11 @@ end
 
 --// STATEMENT PARSERS //--
 function ParserMethods:parseLocal()
-  self:consume(1) -- Consume the "local" token
+  self:consumeToken("Keyword", "local")
   if self:checkKeyword("function") then
-    self:consume(1) -- Consume the "function" token
+    self:consumeToken("Keyword", "function")
     local name = self.currentToken.Value
-    self:consume(1) -- Consume the last token of the identifier)
+    self:consume(1) -- Consume the last token of the identifier
     local parameters, isVarArg = self:consumeParameterList()
     self:declareLocalVariable(name)
     local codeblock = self:parseCodeBlock(true, parameters)
@@ -1210,9 +1237,10 @@ function ParserMethods:parseLocal()
 end
 
 function ParserMethods:parseWhile()
-  self:consume(1) -- Consume the "while" token
+  self:consumeToken("Keyword", "while")
   local condition = self:consumeExpression()
-  self:consume(1) -- Consume the last token of the condition
+  -- Consume the last token of the condition
+  self:consume(1)
   self:expectKeyword("do")
   local codeblock = self:parseCodeBlock()
   self:expectKeyword("end", true)
@@ -1223,9 +1251,9 @@ function ParserMethods:parseWhile()
 end
 
 function ParserMethods:parseRepeat()
-  self:consume(1) -- Consume the "repeat" token
+  self:consumeToken("Keyword", "repeat")
   local codeblock = self:parseCodeBlock()
-  self:expectKeyword("until")
+  self:consumeToken("Keyword", "until")
   local condition = self:consumeExpression()
   return { TYPE = "RepeatLoop",
     CodeBlock = codeblock,
@@ -1234,7 +1262,7 @@ function ParserMethods:parseRepeat()
 end
 
 function ParserMethods:parseDo()
-  self:consume(1) -- Consume the "do" token
+  self:consumeToken("Keyword", "do")
   local codeblock = self:parseCodeBlock()
   self:expectKeyword("end", true)
   return { TYPE = "DoBlock",
@@ -1243,7 +1271,7 @@ function ParserMethods:parseDo()
 end
 
 function ParserMethods:parseReturn()
-  self:consume(1) -- Consume the "return" token
+  self:consumeToken("Keyword", "return")
   local expressions = self:consumeExpressions()
   self:adjustMultiretNodes(expressions, -1)
   return { TYPE = "ReturnStatement",
@@ -1256,10 +1284,10 @@ function ParserMethods:parseBreak()
 end
 
 function ParserMethods:parseIf()
-  self:consume(1) -- Consume the "if" token
+  self:consumeToken("Keyword", "if")
   local ifCondition = self:consumeExpression()
   self:consume(1) -- Consume the last token of the if condition
-  self:expectKeyword("then")
+  self:consumeToken("Keyword", "then")
   local ifCodeBlock = self:parseCodeBlock()
   local branches = { TYPE = "IfBranchList",
     { TYPE = "IfBranch",
@@ -1268,9 +1296,11 @@ function ParserMethods:parseIf()
     }
   }
   while self:checkKeyword("elseif") do
-    self:consume(1) -- Consume the "elseif" token
+    -- Consume the "elseif" token
+    self:consumeToken("Keyword", "elseif")
     local elseifCondition = self:consumeExpression()
-    self:consume(1) -- Consume the last token of the elseif condition
+    -- Consume the last token of the elseif condition
+    self:consume(1)
     self:expectKeyword("then")
     local elseifCodeBlock = self:parseCodeBlock()
     local ifBranch = { TYPE = "IfBranch",
@@ -1281,7 +1311,7 @@ function ParserMethods:parseIf()
   end
   local elseCodeBlock
   if self:checkKeyword("else") then
-    self:consume(1) -- Consume the "else" token
+     self:consumeToken("Keyword", "else")
     elseCodeBlock = self:parseCodeBlock()
   end
   self:expectKeyword("end", true)
@@ -1292,22 +1322,24 @@ function ParserMethods:parseIf()
 end
 
 function ParserMethods:parseFor()
-  self:consume(1) -- Consume the "for" token
+  self:consumeToken("Keyword", "for")
   local variableName = self:expectTokenType("Identifier", true).Value
-  self:consume(1) -- Consume the variable name
+  -- Consume the variable name
+  self:consume(1)
   if self:checkCharacter(",") or self:checkKeyword("in") then
     local iteratorVariables = { variableName }
     while self:checkCharacter(",") do
-      self:consume(1) -- Consume the comma
+      self:consumeToken("Character", ",")
       local newVariableName = self:expectTokenType("Identifier", true).Value
       table.insert(iteratorVariables, newVariableName)
-      self:consume(1) -- Consume the variable name
+      -- Consume the variable name
+      self:consume(1)
     end
     self:expectKeyword("in")
     local expressions = self:consumeExpressions()
     self:adjustMultiretNodes(expressions, 3)
     self:consume(1) -- Consume the last token of the expressions
-    self:expectKeyword("do")
+    self:consumeToken("Keyword", "do")
     local codeblock = self:parseCodeBlock(false, iteratorVariables)
     self:expectKeyword("end", true)
     return { TYPE = "GenericForLoop",
@@ -1316,10 +1348,10 @@ function ParserMethods:parseFor()
       CodeBlock = codeblock
     }
   end
-  self:expectCharacter("=")
+  self:consumeToken("Character", "=")
   local expressions = self:consumeExpressions()
   self:consume(1) -- Consume the last token of the expressions
-  self:expectKeyword("do")
+  self:consumeToken("Keyword", "do")
   local codeblock = self:parseCodeBlock(false, { variableName })
   self:expectKeyword("end", true)
   return { TYPE = "NumericForLoop",
@@ -1333,19 +1365,18 @@ function ParserMethods:parseFunction()
   -- fuction <variable>[.<field>]:<method>(...)
   --   <codeblock>
   -- end
-
-  self:consume(1) -- Consume the "function" token
+  self:consumeToken("Keyword", "function")
   local variableName = self:expectTokenType("Identifier", true).Value
   local variableType = self:getVariableType(variableName)
   local expression = { TYPE = "Variable", Value = variableName, VariableType = variableType }
   local fields, IsMethodCall = { }, false
   while self:consume(1) do
     if self:checkCharacter(".") then
-      self:consume(1) -- Consume the "."
+      self:consumeToken("Character", ".")
       local fieldName = self:expectTokenType("Identifier", true).Value
       table.insert(fields, fieldName)
     elseif self:checkCharacter(":") then
-      self:consume(1) -- Consume the ":"
+      self:consumeToken("Character", ":")
       local methodName = self:expectTokenType("Identifier", true).Value
       table.insert(fields, methodName)
       IsMethodCall = true
@@ -1800,7 +1831,6 @@ function CodeGeneratorMethods:compileFunctionCallNode(node, expressionRegister)
   expressionRegister = expressionRegister or self:allocateRegister()
 
   local selfArgumentRegister
-  -- Check if it's not a method call
   if not node.IsMethodCall then
     self:processExpressionNode(node.Expression, expressionRegister)
   else
@@ -1991,7 +2021,7 @@ end
 
 function CodeGeneratorMethods:compileLocalFunctionDeclarationNode(node)
   local name = node.Name
-self:registerVariable(name, -1) -- Placeholder variable
+  self:registerVariable(name, -1) -- Placeholder variable
   -- Can't allocate the register before processing the function,
   -- use .nextFreeRegister instead
   local nextFreeRegister = self.nextFreeRegister
