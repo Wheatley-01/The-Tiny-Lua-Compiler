@@ -1545,13 +1545,14 @@ end
 
 -- Sets code generator instance's properties to the current prototype
 function CodeGeneratorMethods:syncProto()
-  self.currentProto.code           = self.code
-  self.currentProto.constants      = self.constants
-  self.currentProto.constantLookup = self.constantLookup
-  self.currentProto.upvalues       = self.upvalues
-  self.currentProto.upvalueLookup  = self.upvalueLookup
-  self.currentProto.protos         = self.protos
-  self.currentProto.maxStackSize   = self.maxStackSize
+  local currentProto = self.currentProto
+  currentProto.code           = self.code
+  currentProto.constants      = self.constants
+  currentProto.constantLookup = self.constantLookup
+  currentProto.upvalues       = self.upvalues
+  currentProto.upvalueLookup  = self.upvalueLookup
+  currentProto.protos         = self.protos
+  currentProto.maxStackSize   = self.maxStackSize
 end
 
 function CodeGeneratorMethods:newProto()
@@ -1637,8 +1638,7 @@ function CodeGeneratorMethods:findVariableRegister(localName)
     elseif currentScope.isFunctionScope then
       break
     end
-    local previousScope = currentScope.previousScope
-    currentScope = previousScope
+    currentScope = currentScope.previousScope
   end
   error("Could not find variable: " .. localName)
 end
@@ -1707,9 +1707,11 @@ end
 function CodeGeneratorMethods:exitScope()
   table.remove(self.scopes)
   if #self.scopes > 0 then
-    self.currentScope = self.scopes[#self.scopes]
-    self.locals = self.currentScope.locals
-    self.nextFreeRegister = self.currentScope.nextFreeRegister
+    local currentScope = self.scopes[#self.scopes]
+
+    self.currentScope = currentScope
+    self.locals = currentScope.locals
+    self.nextFreeRegister = currentScope.nextFreeRegister
     return
   end
 
