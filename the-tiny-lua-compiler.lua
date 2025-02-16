@@ -2404,9 +2404,13 @@ end
   ============================================================================
 --]]
 
+local LUA_VERSION = string.char(0x51)
+
 local MODE_iABC = 0
 local MODE_iABx = 1
 local MODE_iAsBx = 2
+
+local VARARG_ISVARARG = 2
 
 local COMPILER_OPCODE_LOOKUP = {
   ["MOVE"]     = {0, MODE_iABC},  ["LOADK"]     = {1, MODE_iABx},  ["LOADBOOL"] = {2, MODE_iABC},  ["LOADNIL"]   = {3, MODE_iABC},
@@ -2553,32 +2557,34 @@ function CompilerMethods:makeCodeSection(proto)
 end
 
 function CompilerMethods:makeFunction(proto)
-  local functionHeader = self:makeString(proto.functionName)                       -- Function name
-  functionHeader = functionHeader .. self:makeFourBytes(0)                         -- Line defined
-  functionHeader = functionHeader .. self:makeFourBytes(0)                         -- Last line defined
-  functionHeader = functionHeader .. self:makeOneByte(#proto.upvalues)             -- nups (Number of upvalues)
-  functionHeader = functionHeader .. self:makeOneByte(proto.numParams)             -- Number of parameters
-  functionHeader = functionHeader .. self:makeOneByte((proto.isVarArg and 2) or 0) -- Is vararg
-  functionHeader = functionHeader .. self:makeOneByte(proto.maxStackSize)          -- Max stack size
-  functionHeader = functionHeader .. self:makeCodeSection(proto)                   -- Code section
-  functionHeader = functionHeader .. self:makeConstantSection(proto)               -- Constant section
-  functionHeader = functionHeader .. self:makeFourBytes(0)                         -- Line info
-  functionHeader = functionHeader .. self:makeFourBytes(0)                         -- Local variables
-  functionHeader = functionHeader .. self:makeFourBytes(0)                         -- Upvalues
+  local functionHeader = self:makeString(proto.functionName)              -- Function name
+  functionHeader = functionHeader .. self:makeFourBytes(0)                -- Line defined
+  functionHeader = functionHeader .. self:makeFourBytes(0)                -- Last line defined
+  functionHeader = functionHeader .. self:makeOneByte(#proto.upvalues)    -- nups (Number of upvalues)
+  functionHeader = functionHeader .. self:makeOneByte(proto.numParams)    -- Number of parameters
+  functionHeader = functionHeader .. self:makeOneByte((proto.isVarArg and VARARG_ISVARARG) or 0) -- Is vararg
+  functionHeader = functionHeader .. self:makeOneByte(proto.maxStackSize) -- Max stack size
+  functionHeader = functionHeader .. self:makeCodeSection(proto)          -- Code section
+  functionHeader = functionHeader .. self:makeConstantSection(proto)      -- Constant section
+
+  -- Debug-only info (not implemented)
+  functionHeader = functionHeader .. self:makeFourBytes(0) -- Line info
+  functionHeader = functionHeader .. self:makeFourBytes(0) -- Local variables
+  functionHeader = functionHeader .. self:makeFourBytes(0) -- Upvalues
 
   return functionHeader
 end
 
 function CompilerMethods:makeHeader()
-  local header = "\27Lua"              -- Signature
-  header = header .. string.char(0x51) -- Version 5.1
-  header = header .. "\0"              -- Format 0 (official)
-  header = header .. "\1"              -- Little endian
-  header = header .. "\4"              -- sizeof(int)
-  header = header .. "\8"              -- sizeof(size_t)
-  header = header .. "\4"              -- sizeof(Instruction)
-  header = header .. "\8"              -- sizeof(lua_Number)
-  header = header .. "\0"              -- Integral flag
+  local header = "\27Lua"        -- Signature
+  header = header .. LUA_VERSION -- Version 5.1
+  header = header .. "\0"        -- Format 0 (official)
+  header = header .. "\1"        -- Little endian
+  header = header .. "\4"        -- sizeof(int)
+  header = header .. "\8"        -- sizeof(size_t)
+  header = header .. "\4"        -- sizeof(Instruction)
+  header = header .. "\8"        -- sizeof(lua_Number)
+  header = header .. "\0"        -- Integral flag
   return header
 end
 
