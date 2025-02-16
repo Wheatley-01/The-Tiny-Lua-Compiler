@@ -1,19 +1,21 @@
-![Banner](https://github.com/ByteXenon/TinyLua/assets/125568681/41cf5285-e31d-4b27-a8a8-ee83a7300f1f)
+<div align="center">
 
-**_originally inspired by Jamie Kyle's [The Super Tiny Compiler](https://github.com/jamiebuilds/the-super-tiny-compiler) written in JavaScript_**
+![The Tiny Lua Compiler (TLC)](https://github.com/ByteXenon/TinyLua/assets/125568681/41cf5285-e31d-4b27-a8a8-ee83a7300f1f)
 
-**Welcome to The Tiny Lua Compiler!**
+**A minimal, educational Lua 5.1 compiler written in Lua**
 
-This is an ultra-simplified example of all the major pieces of a modern compiler
-written in easy to read Lua code.
+_Inspired by [Jamie Kyle's The Super Tiny Compiler](https://github.com/jamiebuilds/the-super-tiny-compiler) written in JavaScript_
+
+</div>
 
 ## Features
 
-- **Zero dependencies**: This compiler is written in pure Lua and has no dependencies.
 - **Educational**: Reading through the guided code will help you learn about how _most_ compilers work from end to end.
-- **Self-compiling**: This compiler can compile itself!
+- [**Self-compiling**](<https://en.wikipedia.org/wiki/Self-hosting_(compilers)>): This compiler can compile itself!
+- **Zero dependencies**: This compiler is written in pure Lua and has no dependencies.
+- **Speed**: Even though speed is not the main priority, the compiler is still pretty fast compared to other Lua compilers written in Lua.
 
-### [Want to jump into the code? Click here](the-tiny-lua-compiler.lua)
+### [Want to jump into the code? Click here](https://github.com/bytexenon/The-Tiny-Lua-Compiler/blob/main/the-tiny-lua-compiler.lua)
 
 ---
 
@@ -36,39 +38,52 @@ taken something that is reasonably straightforward and made it so scary that
 most think of it as this totally unapproachable thing that only the nerdiest of
 the nerds are able to understand.
 
-### Okay so where do I begin?
-
-Awesome! Head on over to the [the-tiny-lua-compiler.lua](the-tiny-lua-compiler.lua)
-file.
-
 ### Example usage?
 
-Currently, the compiler only supports Lua 5.1. Here's an example of how you can use it:
+The compiler is written in a way that it can be used as a library.
+Here is an example of how you can use it:
 
 ```lua
 local tlc = require("the-tiny-lua-compiler")
 
-local inputCode = [[
-  for index = 1, 10 do
-    print(index)
+local code = [[
+  for i = 1, 3 do
+    print("Hello from TLC! " .. i)
   end
-  print("Hello, World!")
 ]]
 
-local tokens             = tlc.Tokenizer.new(inputCode):tokenize()
+-- Tokenize the code
+local tokens = tlc.Tokenizer.new(code):tokenize()
+
+-- Convert tokens into an Abstract Syntax Tree (AST)
 local abstractSyntaxTree = tlc.Parser.new(tokens):parse()
-local prototype          = tlc.CodeGenerator.new(abstractSyntaxTree):generate()
-local bytecode           = tlc.Compiler.new(prototype):compile()
 
+-- Generate executable code
+local prototype = tlc.CodeGenerator.new(abstractSyntaxTree):generate()
+local bytecode = tlc.Compiler.new(prototype):compile()
+
+-- Load and execute the compiled function.
+-- Only works in Lua 5.1 (as it generates Lua 5.1 bytecode)
 local compiledFunction = loadstring(bytecode)
-
--- Run the compiled function
 compiledFunction()
 ```
 
+### Okay so where do I begin?
+
+Awesome! Head on over to the [the-tiny-lua-compiler.lua](https://github.com/bytexenon/The-Tiny-Lua-Compiler/blob/main/the-tiny-lua-compiler.lua) file.
+
 ### Tests
 
-Run with `lua tests/test.lua`
+Run the test suite with:
+
+```bash
+sh tests/test.sh
+```
+
+### Support The Tiny Lua Compiler
+
+I don't take donations, but you can support TLC by starring the repository and sharing it with others.
+If you find a bug or have a feature request, feel free to open an issue or submit a pull request.
 
 ---
 
