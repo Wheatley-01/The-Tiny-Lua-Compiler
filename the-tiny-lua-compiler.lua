@@ -303,7 +303,7 @@ function TokenizerMethods:isNumberStart()
   return (
     self:isDigit(curChar)
     or (
--- .[0-9]+
+      -- .[0-9]+
       curChar == "." and self:isDigit(self:lookAhead(1))
     )
   )
@@ -330,9 +330,9 @@ end
 function TokenizerMethods:isString()
   local curChar  = self.curChar
   local nextChar = self:lookAhead(1)
--- Simple string check
+  -- Simple string check
   return (curChar == '"' or curChar == "'")
--- Long string check
+      -- Long string check
       or (curChar == "[" and (
         nextChar == "[" or nextChar == "="
       )
@@ -397,7 +397,7 @@ function TokenizerMethods:consumeNumber()
     if self:lookAhead(1) == "+" or self:lookAhead(1) == "-" then
       self:consume(1) -- Consume an optional sign character
     end
--- Exponent part
+    -- Exponent part
     while self:isDigit(self:lookAhead(1)) do
       self:consume(1)
     end
@@ -968,7 +968,7 @@ function ParserMethods:consumeTable()
   end
   local lastElement = elements[#elements]
   if lastElement and lastElement.IsImplicitKey then
-    local lastElementValue = lastElement.Value.Value
+    local lastElementValue = lastElement.Value
     if self:isMultiretNode(lastElementValue) then
       lastElementValue.ReturnValueAmount = -1
     end
@@ -989,7 +989,7 @@ function ParserMethods:consumeFunctionCall(currentExpression)
   return { TYPE = "FunctionCall",
     Expression        = currentExpression,
     Arguments         = arguments,
-IsMethodCall      = false,
+    IsMethodCall      = false,
     ReturnValueAmount = 1
   }
 end
@@ -1003,7 +1003,7 @@ function ParserMethods:consumeImplicitFunctionCall(lvalue)
     return { TYPE = "FunctionCall",
       Expression        = lvalue,
       Arguments         = arguments,
-IsMethodCall      = false,
+      IsMethodCall      = false,
       ReturnValueAmount = 1
     }
   end
@@ -1013,7 +1013,7 @@ IsMethodCall      = false,
   return { TYPE = "FunctionCall",
     Expression        = lvalue,
     Arguments         = arguments,
-IsMethodCall      = false,
+    IsMethodCall      = false,
     ReturnValueAmount = 1
   }
 end
@@ -1177,7 +1177,7 @@ function ParserMethods:parseBinaryExpression(minPrecedence)
   return expression
 end
 
-function ParserMethods:consumeExpression(returnRawNode)
+function ParserMethods:consumeExpression()
   local expression = self:parseBinaryExpression(0)
   if not expression then
     -- Backtrack to the last token
@@ -1189,13 +1189,15 @@ function ParserMethods:consumeExpression(returnRawNode)
 end
 
 function ParserMethods:consumeExpressions()
-  local expressions = { self:consumeExpression(true) }
+  local expressions = { TYPE = "Expressions",
+    self:consumeExpression()
+  }
   if #expressions == 0 then return {} end
 
   local nextToken = self:lookAhead(1)
   while self:isComma(nextToken) do
     self:consume(2) -- Consume the last token of the last expression and ","
-    local expression = self:consumeExpression(true)
+    local expression = self:consumeExpression()
     table.insert(expressions, expression)
     nextToken = self:lookAhead(1)
   end
@@ -1384,18 +1386,17 @@ function ParserMethods:parseFunction()
       table.insert(fields, fieldName)
     else
       if self:checkCharacter(":") then
-      self:consumeToken("Character", ":")
-      local methodName = self:expectTokenType("Identifier", true).Value
-      table.insert(fields, methodName)
-      IsMethodCall = true
-      self:consume(1) -- Consume the method name
+        self:consumeToken("Character", ":")
+        local methodName = self:expectTokenType("Identifier", true).Value
+        table.insert(fields, methodName)
+        IsMethodCall = true
+        self:consume(1) -- Consume the method name
       end
 
       -- It's either an unexpected token or the colon (":") token
       -- Either way, we should break the loop here
       break
-    else break end
-  end
+    end
   end
 
   local parameters, isVarArg = self:consumeParameterList()
@@ -1408,8 +1409,8 @@ function ParserMethods:parseFunction()
   local codeblock = self:parseCodeBlock(true, parameters)
   self:expectKeyword("end", true)
   return { TYPE = "FunctionDeclaration",
-    Expression = expression,
-    Fields = fields,
+    Expression   = expression,
+    Fields       = fields,
     IsMethodCall = IsMethodCall,
     CodeBlock    = codeblock,
     Parameters   = parameters,
@@ -1486,7 +1487,7 @@ function ParserMethods:parseCodeBlock(isFunctionScope, codeBlockVariables)
     self:declareLocalVariables(codeBlockVariables)
   end
 
-  local nodeList = { TYPE = "Chunk" }
+  local nodeList = { TYPE = "Block" }
   while self.currentToken do
     local node = self:getNextNode()
     if not node then break end
@@ -1940,7 +1941,7 @@ function CodeGeneratorMethods:compileTableNode(node, expressionRegister)
       table.insert(currentPageRegisters, valueRegister)
     end
     local lastElement               = implicitElements[endIndex]
-    local lastElementValue          = lastElement.Value.Value
+    local lastElementValue          = lastElement.Value
     local currentPageRegisterAmount = #currentPageRegisters
     if page == pageAmount and self:isMultiretNode(lastElementValue) then
       -- B = 0: Doesn't have a fixed amount of keys (multiret)
@@ -2289,10 +2290,6 @@ end
 function CodeGeneratorMethods:processExpressionNode(node, expressionRegister)
   expressionRegister = expressionRegister or self:allocateRegister()
   local nodeType = node.TYPE
-  while nodeType == "Expression" do
-    node = node.Value
-    nodeType = node.TYPE
-  end
 
   if     nodeType == "Number"         then return self:compileNumberNode(node, expressionRegister)
   elseif nodeType == "String"         then return self:compileStringNode(node, expressionRegister)
