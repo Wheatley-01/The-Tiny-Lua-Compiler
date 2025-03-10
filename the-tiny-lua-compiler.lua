@@ -259,7 +259,6 @@ end
 
 function TokenizerMethods:consumeCharacter(character)
   if self.curChar == character then
-    -- TODO: Check how much the function call overhead affects performance
     return self:consume(1)
   end
 
@@ -302,8 +301,9 @@ end
 function TokenizerMethods:isNumberStart()
   local curChar = self.curChar
   return (
-    curChar and self:isDigit(curChar)
+    self:isDigit(curChar)
     or (
+-- .[0-9]+
       curChar == "." and self:isDigit(self:lookAhead(1))
     )
   )
@@ -330,7 +330,9 @@ end
 function TokenizerMethods:isString()
   local curChar  = self.curChar
   local nextChar = self:lookAhead(1)
+-- Simple string check
   return (curChar == '"' or curChar == "'")
+-- Long string check
       or (curChar == "[" and (
         nextChar == "[" or nextChar == "="
       )
@@ -343,7 +345,8 @@ function TokenizerMethods:consumeWhitespace()
   local startPos  = self.curCharPos
 
   -- It uses "== startChar" instead of "self:isWhitespace"
-  -- as a cheap optimization trick
+  -- as a cheap optimization trick, as we expect the user
+  -- to use the same whitespace character in their code.
   while self:lookAhead(1) == startChar do
     self:consume(1)
   end
@@ -368,14 +371,14 @@ function TokenizerMethods:consumeNumber()
   if self:isHexadecimalNumberPrefix() then
     self:consume(2)   -- Consume the "0x" part
     while self:isHexadecimalNumber(self:lookAhead(1)) do
-      self:consume(1) -- Consume hexadecimal digits
+      self:consume(1)
     end
     return self.code:sub(start, self.curCharPos)
   end
 
   -- [0-9]*
   while self:isDigit(self:lookAhead(1)) do
-    self:consume(1) -- Consume digits
+    self:consume(1)
   end
 
   -- Floating point number case
@@ -390,12 +393,13 @@ function TokenizerMethods:consumeNumber()
   -- Exponential (scientific) notation case
   -- [eE][+-]?[0-9]+
   if self:isScientificNotationPrefix(self:lookAhead(1)) then
-    self:consume(1)   -- Consume the "e" or "E"
+    self:consume(1) -- Consume the "e" or "E" characters
     if self:lookAhead(1) == "+" or self:lookAhead(1) == "-" then
-      self:consume(1) -- Consume optional sign
+      self:consume(1) -- Consume an optional sign character
     end
+-- Exponent part
     while self:isDigit(self:lookAhead(1)) do
-      self:consume(1) -- Consume exponent digits
+      self:consume(1)
     end
   end
 
@@ -598,6 +602,7 @@ function TokenizerMethods:tokenize()
       tokens[tokenIndex] = token
       tokenIndex         = tokenIndex + 1
     end
+    -- Move to the next character
     self:consume(1)
   end
   return tokens
@@ -660,6 +665,11 @@ local PARSER_OPERATOR_PRECEDENCE = {
   ["<"]   = {3, 3},  [">"]  = {3, 3}, ["<="] = {3, 3}, [">="] = {3, 3},
   ["and"] = {2, 2},  ["or"] = {1, 1}
 }
+
+--[[
+  Lookup tables for unary and binary operators.
+  These tables help identify operators during the parsing process.
+--]]
 local PARSER_LUA_UNARY_OPERATORS  = createLookupTable({ "-", "#", "not" })
 local PARSER_LUA_BINARY_OPERATORS = createLookupTable({
   "+",  "-",   "*",  "/",
@@ -721,14 +731,6 @@ function ParserMethods:consumeToken(tokenType, tokenValue)
     "Expected %s [%s] token, got: %s [%s]",
     tokenType, tokenValue, token.TYPE, token.Value
   ))
-end
-
-function ParserMethods:consumeTokenType(tokenType)
-  local token = self.currentToken
-  if token.TYPE == tokenType then
-    return self:consume(1)
-  end
-  error(string.format("Expected %s token, got: %s", tokenType, token.TYPE))
 end
 
 --// Token Expectation //--
@@ -877,7 +879,6 @@ function ParserMethods:consumeParameterList()
       table.insert(parameters, self.currentToken.Value)
     elseif self.currentToken.TYPE == "VarArg" then
       isVarArg = true
-      -- Consume the "..."
       self:consumeToken("VarArg")
       break
     end
@@ -892,8 +893,7 @@ end
 
 function ParserMethods:consumeTableIndex(currentExpression)
   self:consumeToken("Character", ".")
-  local indexToken = {
-    TYPE = "String",
+  local indexToken = { TYPE = "String",
     Value = self.currentToken.Value
   }
 
@@ -909,7 +909,7 @@ function ParserMethods:consumeBracketTableIndex(currentExpression)
   self:consume(1) -- Consume the last token of the index expression
   self:expectCharacter("]", true)
   return { TYPE = "TableIndex",
-    Index = indexExpression,
+    Index      = indexExpression,
     Expression = currentExpression
   }
 end
@@ -950,7 +950,11 @@ function ParserMethods:consumeTable()
       isImplicitKey = true
       value = self:consumeExpression()
     end
-    local element = { Key = key, Value = value, IsImplicitKey = isImplicitKey }
+    local element = {
+      Key           = key,
+      Value         = value,
+      IsImplicitKey = isImplicitKey
+    }
     local tableToInsert = (isImplicitKey and implicitElements) or explicitElements
     table.insert(tableToInsert, element)
     table.insert(elements, element)
@@ -983,10 +987,10 @@ function ParserMethods:consumeFunctionCall(currentExpression)
   -- Consume the last token of the expression
   self:consume(1)
   return { TYPE = "FunctionCall",
-    Expression = currentExpression,
-    Arguments = arguments,
-    ReturnValueAmount = 1,
-    IsMethodCall = false
+    Expression        = currentExpression,
+    Arguments         = arguments,
+IsMethodCall      = false,
+    ReturnValueAmount = 1
   }
 end
 
@@ -996,22 +1000,21 @@ function ParserMethods:consumeImplicitFunctionCall(lvalue)
   -- <string>?
   if currentTokenType == "String" then
     local arguments = { self.currentToken }
-    return {
-      TYPE = "FunctionCall",
-      Expression = lvalue,
-      Arguments = arguments,
-      ReturnValueAmount = 1,
-      IsMethodCall = false
+    return { TYPE = "FunctionCall",
+      Expression        = lvalue,
+      Arguments         = arguments,
+IsMethodCall      = false,
+      ReturnValueAmount = 1
     }
   end
 
   -- <table>
   local arguments = { self:consumeTable() }
   return { TYPE = "FunctionCall",
-    Expression = lvalue,
-    Arguments = arguments,
-    ReturnValueAmount = 1,
-    IsMethodCall = false
+    Expression        = lvalue,
+    Arguments         = arguments,
+IsMethodCall      = false,
+    ReturnValueAmount = 1
   }
 end
 
@@ -1051,7 +1054,7 @@ function ParserMethods:parsePrimaryExpression()
   elseif tokenType == "Identifier" then
     local variableType = self:getVariableType(tokenValue)
     local variableNode = { TYPE = "Variable",
-      Value = tokenValue,
+      Value        = tokenValue,
       VariableType = variableType
     }
     return variableNode
@@ -1071,12 +1074,13 @@ function ParserMethods:parsePrimaryExpression()
       local codeblock = self:parseCodeBlock(true, parameters)
       self:expectKeyword("end", true)
       return { TYPE = "Function",
-        CodeBlock = codeblock,
+        CodeBlock  = codeblock,
         Parameters = parameters,
-        IsVarArg = isVarArg
+        IsVarArg   = isVarArg
       }
     end
   end
+
   return nil
 end
 
@@ -1109,6 +1113,7 @@ function ParserMethods:parseSuffixExpression(primaryExpression)
       return self:consumeImplicitFunctionCall(primaryExpression)
     end
   end
+
   return nil
 end
 
@@ -1165,7 +1170,8 @@ function ParserMethods:parseBinaryExpression(minPrecedence)
 
     expression = { TYPE = "BinaryOperator",
       Operator = operatorToken.Value,
-      Left = expression, Right = right
+      Left     = expression,
+      Right    = right
     }
   end
   return expression
@@ -1178,10 +1184,8 @@ function ParserMethods:consumeExpression(returnRawNode)
     self:consume(-1)
     return
   end
-  if returnRawNode then return expression end
-  return { TYPE = "Expression",
-    Value = expression
-  }
+
+  return expression
 end
 
 function ParserMethods:consumeExpressions()
@@ -1211,10 +1215,10 @@ function ParserMethods:parseLocal()
     local codeblock = self:parseCodeBlock(true, parameters)
     self:expectKeyword("end", true)
     return { TYPE = "LocalFunctionDeclaration",
-      Name = name,
-      CodeBlock = codeblock,
+      Name       = name,
+      CodeBlock  = codeblock,
       Parameters = parameters,
-      IsVarArg = isVarArg
+      IsVarArg   = isVarArg
     }
   end
   local variables = self:consumeIdentifierList()
@@ -1316,7 +1320,7 @@ function ParserMethods:parseIf()
   end
   self:expectKeyword("end", true)
   return { TYPE = "IfStatement",
-    Branches = branches,
+    Branches      = branches,
     ElseCodeBlock = elseCodeBlock
   }
 end
@@ -1344,8 +1348,8 @@ function ParserMethods:parseFor()
     self:expectKeyword("end", true)
     return { TYPE = "GenericForLoop",
       IteratorVariables = iteratorVariables,
-      Expressions = expressions,
-      CodeBlock = codeblock
+      Expressions       = expressions,
+      CodeBlock         = codeblock
     }
   end
   self:consumeToken("Character", "=")
@@ -1356,47 +1360,60 @@ function ParserMethods:parseFor()
   self:expectKeyword("end", true)
   return { TYPE = "NumericForLoop",
     VariableName = variableName,
-    Expressions = expressions,
-    CodeBlock = codeblock
+    Expressions  = expressions,
+    CodeBlock    = codeblock
   }
 end
 
 function ParserMethods:parseFunction()
-  -- function <variable>[.<field>]:<method>(...)
+  -- function <variable>[.<field>]*:<method>(...)
   --   <codeblock>
   -- end
+
   self:consumeToken("Keyword", "function")
   local variableName = self:expectTokenType("Identifier", true).Value
   local variableType = self:getVariableType(variableName)
   local expression = { TYPE = "Variable", Value = variableName, VariableType = variableType }
   local fields, IsMethodCall = { }, false
+
+  -- Consume function's fields and method name (if any)
   while self:consume(1) do
     if self:checkCharacter(".") then
       self:consumeToken("Character", ".")
       local fieldName = self:expectTokenType("Identifier", true).Value
       table.insert(fields, fieldName)
-    elseif self:checkCharacter(":") then
+    else
+      if self:checkCharacter(":") then
       self:consumeToken("Character", ":")
       local methodName = self:expectTokenType("Identifier", true).Value
       table.insert(fields, methodName)
       IsMethodCall = true
       self:consume(1) -- Consume the method name
+      end
+
+      -- It's either an unexpected token or the colon (":") token
+      -- Either way, we should break the loop here
       break
     else break end
   end
+  end
+
   local parameters, isVarArg = self:consumeParameterList()
   if IsMethodCall then
+    -- Implicitly add "self" as the firt parameter
+    -- for method calls
     table.insert(parameters, 1, "self")
   end
+
   local codeblock = self:parseCodeBlock(true, parameters)
   self:expectKeyword("end", true)
   return { TYPE = "FunctionDeclaration",
     Expression = expression,
     Fields = fields,
     IsMethodCall = IsMethodCall,
-    CodeBlock = codeblock,
-    Parameters = parameters,
-    IsVarArg = isVarArg
+    CodeBlock    = codeblock,
+    Parameters   = parameters,
+    IsVarArg     = isVarArg
   }
 end
 
@@ -1558,11 +1575,6 @@ local COMPILER_CONTROL_FLOW_OPERATOR_LOOKUP = createLookupTable({"and", "or"})
     information about the function, such as the number of arguments,
     the number of local variables, and the number of upvalues.
 
-    Here's an example of how the Code Generator converts a simple AST
-    into Lua instructions:
-    ```lua
- 
-    ```
     The resulting proto would look like this:
 
 --]]
@@ -2444,8 +2456,13 @@ end
   ============================================================================
 --]]
 
+-- Version to use in the bytecode signature
 local LUA_VERSION = string.char(0x51)
 
+-- Types of Lua instruction arguments modes
+--  - iABC:  A (8 bit), B (9 bit), C (9 bit)
+--  - iABx:  A (8 bit), Bx (18 bit)
+--  - iAsBx: A (8 bit), sBx (18 bit, signed)
 local MODE_iABC = 0
 local MODE_iABx = 1
 local MODE_iAsBx = 2
@@ -2598,8 +2615,8 @@ end
 
 function CompilerMethods:makeFunction(proto)
   local functionHeader = self:makeString(proto.functionName)              -- Function name
-  functionHeader = functionHeader .. self:makeFourBytes(0)                -- Line defined
-  functionHeader = functionHeader .. self:makeFourBytes(0)                -- Last line defined
+  functionHeader = functionHeader .. self:makeFourBytes(0)                -- Line defined (debug)
+  functionHeader = functionHeader .. self:makeFourBytes(0)                -- Last line defined (debug)
   functionHeader = functionHeader .. self:makeOneByte(#proto.upvalues)    -- nups (Number of upvalues)
   functionHeader = functionHeader .. self:makeOneByte(proto.numParams)    -- Number of parameters
   functionHeader = functionHeader .. self:makeOneByte((proto.isVarArg and VARARG_ISVARARG) or 0) -- Is vararg
