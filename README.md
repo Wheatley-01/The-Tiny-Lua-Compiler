@@ -14,6 +14,7 @@ _Inspired by [Jamie Kyle's The Super Tiny Compiler](https://github.com/jamiebuil
 - [**Self-compiling**](<https://en.wikipedia.org/wiki/Self-hosting_(compilers)>): This compiler can compile itself!
 - **Zero dependencies**: This compiler is written in pure Lua and has no dependencies.
 - **Speed**: Even though speed is not the main priority, the compiler is still pretty fast compared to other Lua compilers written in Lua.
+- **100% test coverage**: TLC has a test suite that covers 100% of the code. Want to see it in action? Run `sh tests/test.sh` in your terminal.
 
 ### [Want to jump into the code? Click here](https://github.com/bytexenon/The-Tiny-Lua-Compiler/blob/main/the-tiny-lua-compiler.lua)
 
@@ -80,7 +81,7 @@ Run the test suite with:
 sh tests/test.sh
 ```
 
-### Support The Tiny Lua Compiler
+### Support The Tiny Lua Compiler (TLC)
 
 I don't take donations, but you can support TLC by starring the repository and sharing it with others.
 If you find a bug or have a feature request, feel free to open an issue or submit a pull request.
