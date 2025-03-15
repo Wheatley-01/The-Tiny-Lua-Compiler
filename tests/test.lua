@@ -7,29 +7,11 @@ local tlc = require("the-tiny-lua-compiler")
 -- Constants --
 local MAX_PATH_LENGTH = 80
 
--- Used for printing escaped characters in strings
-local ESCAPED_CHARS = {
-  ["\a"] = "\\a",
-  ["\b"] = "\\b",
-  ["\f"] = "\\f",
-  ["\n"] = "\\n",
-  ["\r"] = "\\r",
-  ["\t"] = "\\t",
-  ["\v"] = "\\v"
-}
-
--- Local functions --
-local function escapeString(str)
-  return str:gsub(".", function(c)
-    return ESCAPED_CHARS[c] or c
-  end)
-end
-
 -- TEST HARNESS SETUP --
 local TLCTest = {}
 TLCTest.__index = TLCTest
 
-function TLCTest.new(name)
+function TLCTest.new()
   local self = setmetatable({}, TLCTest)
   self.ranTests = {}
   self.groups = {}
@@ -58,7 +40,7 @@ end
 
 function TLCTest:it(name, func)
   local errorTable = nil
-  local status, result = xpcall(func, function(err)
+  xpcall(func, function(err)
     local message = err
     local traceback = debug.traceback("", 2):sub(2)
 
@@ -137,7 +119,7 @@ local function compileAndRun(code)
 end
 
 -- TEST SUITE --
-suite = TLCTest.new()
+local suite = TLCTest.new()
 
 suite:describe("Lexical Conventions", function()
   suite:it("String delimiters", function()
