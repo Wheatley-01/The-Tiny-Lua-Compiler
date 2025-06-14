@@ -1073,7 +1073,9 @@ function Parser:parsePrimaryExpression()
       self:consume(1) -- Consume the parenthesis
       local expression = self:consumeExpression()
       self:consume(1) -- Consume the last token of the expression
-      return expression
+      return { TYPE = "ParenthesizedExpr",
+				Expression = expression,
+			}
     elseif tokenValue == "{" then -- Table constructor
       return self:consumeTable()
     end
@@ -2311,17 +2313,20 @@ function CodeGenerator:processExpressionNode(node, expressionRegister)
   expressionRegister = expressionRegister or self:allocateRegister()
   local nodeType = node.TYPE
 
-  if     nodeType == "Number"         then return self:compileNumberNode(node, expressionRegister)
-  elseif nodeType == "String"         then return self:compileStringNode(node, expressionRegister)
-  elseif nodeType == "Function"       then return self:compileFunctionNode(node, expressionRegister)
-  elseif nodeType == "FunctionCall"   then return self:compileFunctionCallNode(node, expressionRegister)
-  elseif nodeType == "Constant"       then return self:compileConstantNode(node, expressionRegister)
-  elseif nodeType == "VarArg"         then return self:compileVarArgNode(node, expressionRegister)
-  elseif nodeType == "TableIndex"     then return self:compileTableIndexNode(node, expressionRegister)
-  elseif nodeType == "Table"          then return self:compileTableNode(node, expressionRegister)
-  elseif nodeType == "Variable"       then return self:compileVariableNode(node, expressionRegister)
-  elseif nodeType == "BinaryOperator" then return self:compileBinaryOperatorNode(node, expressionRegister)
-  elseif nodeType == "UnaryOperator"  then return self:compileUnaryOperatorNode(node, expressionRegister)
+  if     nodeType == "Number"            then return self:compileNumberNode(node, expressionRegister)
+  elseif nodeType == "String"            then return self:compileStringNode(node, expressionRegister)
+  elseif nodeType == "Function"          then return self:compileFunctionNode(node, expressionRegister)
+  elseif nodeType == "FunctionCall"      then return self:compileFunctionCallNode(node, expressionRegister)
+  elseif nodeType == "Constant"          then return self:compileConstantNode(node, expressionRegister)
+  elseif nodeType == "VarArg"            then return self:compileVarArgNode(node, expressionRegister)
+  elseif nodeType == "TableIndex"        then return self:compileTableIndexNode(node, expressionRegister)
+  elseif nodeType == "Table"             then return self:compileTableNode(node, expressionRegister)
+  elseif nodeType == "Variable"          then return self:compileVariableNode(node, expressionRegister)
+  elseif nodeType == "BinaryOperator"    then return self:compileBinaryOperatorNode(node, expressionRegister)
+  elseif nodeType == "UnaryOperator"     then return self:compileUnaryOperatorNode(node, expressionRegister)
+  elseif nodeType == "ParenthesizedExpr" then
+    -- Must compile the first part of the expression only on parenthesis
+    return self:processExpressionNode(node.Expression, expressionRegister)
   end
 
   error("Unsupported expression node type: " .. tostring(nodeType))
