@@ -1074,8 +1074,8 @@ function Parser:parsePrimaryExpression()
       local expression = self:consumeExpression()
       self:consume(1) -- Consume the last token of the expression
       return { TYPE = "ParenthesizedExpr",
-				Expression = expression,
-			}
+        Expression = expression,
+      }
     elseif tokenValue == "{" then -- Table constructor
       return self:consumeTable()
     end
