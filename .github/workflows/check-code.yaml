@@ -10,14 +10,14 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v2
+      - name: Checkout code
+        uses: actions/checkout@v2
 
-    - name: Set up Lua
-      uses: leafo/gh-actions-lua@v8
-      with:
-        luaVersion: "5.4.0"
+      - name: Set up Lua
+        uses: leafo/gh-actions-lua@v8
+        with:
+          luaVersion: "5.1"
 
-    - name: Run script
-      run: |
-        bash tests/test.sh
+      - name: Run script
+        run: |
+          lua tests/test.lua
